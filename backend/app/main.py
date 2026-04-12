@@ -1,12 +1,152 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 import subprocess
 import json
+import os
 import re
+import time
 
 
 app = FastAPI(title="R1000 Network Panel")
+SERVICE_LAN_DNSMASQ_IPV6_CONF = "/etc/NetworkManager/dnsmasq-shared.d/99-service-lan-ipv6.conf"
+LTE_APN_PROFILES = [
+    {
+        "id": "de-telekom-dual",
+        "country": "Germany",
+        "provider": "Telekom",
+        "apn": "internet.telekom",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["26201"],
+    },
+    {
+        "id": "de-telekom-v6",
+        "country": "Germany",
+        "provider": "Telekom (IPv6)",
+        "apn": "internet.v6.telekom",
+        "ipv4_method": "disabled",
+        "ipv6_method": "auto",
+        "mccmnc": ["26201"],
+    },
+    {
+        "id": "de-vodafone",
+        "country": "Germany",
+        "provider": "Vodafone DE",
+        "apn": "web.vodafone.de",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["26202"],
+    },
+    {
+        "id": "de-o2",
+        "country": "Germany",
+        "provider": "O2 / Telefonica DE",
+        "apn": "internet",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["26207", "26203"],
+    },
+    {
+        "id": "tr-turkcell",
+        "country": "Turkey",
+        "provider": "Turkcell",
+        "apn": "internet",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["28601"],
+    },
+    {
+        "id": "tr-vodafone",
+        "country": "Turkey",
+        "provider": "Vodafone",
+        "apn": "internet",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["28602"],
+    },
+    {
+        "id": "tr-turk-telekom",
+        "country": "Turkey",
+        "provider": "Turk Telekom",
+        "apn": "internet",
+        "ipv4_method": "auto",
+        "ipv6_method": "auto",
+        "mccmnc": ["28603"],
+    },
+]
+LTE_AUTO_APN = {
+    "enabled": True,
+    "last_key": "",
+    "last_applied": 0.0,
+}
+LTE_SIM_OVERRIDES: dict[str, dict[str, str]] = {}
+
+
+def env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SERVICE_LAN_INTERFACE = os.getenv("SERVICE_LAN_INTERFACE", "")
+SERVICE_LAN_IPV4_GATEWAY = os.getenv("SERVICE_LAN_IPV4_GATEWAY", "192.168.10.1")
+SERVICE_LAN_IPV4_SUBNET = os.getenv("SERVICE_LAN_IPV4_SUBNET", "192.168.10.0/24")
+SERVICE_LAN_DHCP_RANGE = os.getenv("SERVICE_LAN_DHCP_RANGE", "192.168.10.100-192.168.10.199")
+SERVICE_LAN_IPV6_GATEWAY = os.getenv("SERVICE_LAN_IPV6_GATEWAY", "fd42:10::1")
+SERVICE_LAN_IPV6_PREFIX = os.getenv("SERVICE_LAN_IPV6_PREFIX", "fd42:10::/64")
+SERVICE_LAN_ENABLE_IPV4 = env_flag("SERVICE_LAN_ENABLE_IPV4", True)
+SERVICE_LAN_ENABLE_IPV6 = env_flag("SERVICE_LAN_ENABLE_IPV6", True)
+FALLBACK_SERVICE_LAN_INTERFACE = "enx2cf7f1232c1a"
+LAN_PROFILE_NAME = os.getenv("LAN_PROFILE_NAME", "Home Lab LAN")
+LAN_TARGET_INTERFACE = os.getenv("LAN_TARGET_INTERFACE", "eth0")
+LAN_ROLE = os.getenv("LAN_ROLE", "multi-purpose")
+LAN_IPV4_MODE = os.getenv("LAN_IPV4_MODE", "shared")
+LAN_IPV4_ADDRESS = os.getenv("LAN_IPV4_ADDRESS", "10.0.0.1/24")
+LAN_IPV4_SUBNET = os.getenv("LAN_IPV4_SUBNET", "10.0.0.0/24")
+LAN_DHCP_RANGE = os.getenv("LAN_DHCP_RANGE", "10.0.0.100-10.0.0.199")
+LAN_IPV6_MODE = os.getenv("LAN_IPV6_MODE", "routed")
+LAN_IPV6_ADDRESS = os.getenv("LAN_IPV6_ADDRESS", "fd42:100::1/64")
+LAN_IPV6_PREFIX = os.getenv("LAN_IPV6_PREFIX", "fd42:100::/64")
+LAN_DNS_SERVERS = os.getenv("LAN_DNS_SERVERS", "1.1.1.1,8.8.8.8")
+LAN_DNS_SEARCH = os.getenv("LAN_DNS_SEARCH", "home.lab")
+MAIN_LAN_CONFIG = {
+    "name": "Main LAN",
+    "target_interface": LAN_TARGET_INTERFACE,
+    "role": LAN_ROLE,
+    "ipv4_mode": LAN_IPV4_MODE,
+    "ipv4_address": LAN_IPV4_ADDRESS,
+    "ipv4_subnet": LAN_IPV4_SUBNET,
+    "dhcp_range": LAN_DHCP_RANGE,
+    "ipv6_mode": LAN_IPV6_MODE,
+    "ipv6_address": LAN_IPV6_ADDRESS,
+    "ipv6_prefix": LAN_IPV6_PREFIX,
+    "dns_servers": LAN_DNS_SERVERS,
+    "dns_search": LAN_DNS_SEARCH,
+}
+SERVICE_LAN_CONFIG = {
+    "interface": SERVICE_LAN_INTERFACE,
+    "ipv4_gateway": SERVICE_LAN_IPV4_GATEWAY,
+    "ipv4_subnet": SERVICE_LAN_IPV4_SUBNET,
+    "dhcp_range": SERVICE_LAN_DHCP_RANGE,
+    "ipv6_gateway": SERVICE_LAN_IPV6_GATEWAY,
+    "ipv6_prefix": SERVICE_LAN_IPV6_PREFIX,
+    "enable_ipv4": "true" if SERVICE_LAN_ENABLE_IPV4 else "false",
+    "enable_ipv6": "true" if SERVICE_LAN_ENABLE_IPV6 else "false",
+}
+WIFI_CONFIG = {
+    "interface": os.getenv("WIFI_INTERFACE", "wlan0"),
+    "mode": os.getenv("WIFI_MODE", "client"),
+    "ssid": os.getenv("WIFI_SSID", ""),
+    "password": os.getenv("WIFI_PASSWORD", ""),
+    "hotspot_ssid": os.getenv("WIFI_HOTSPOT_SSID", "R1000-Hotspot"),
+    "hotspot_password": os.getenv("WIFI_HOTSPOT_PASSWORD", "changeme123"),
+    "ipv4_method": os.getenv("WIFI_IPV4_METHOD", "auto"),
+    "ipv4_address": os.getenv("WIFI_IPV4_ADDRESS", ""),
+    "ipv6_method": os.getenv("WIFI_IPV6_METHOD", "auto"),
+    "ipv6_address": os.getenv("WIFI_IPV6_ADDRESS", ""),
+}
 
 
 def read_text(path: str, default: str = "") -> str:
@@ -24,12 +164,44 @@ def run_command(cmd: list[str]) -> str:
         return ""
 
 
-def run_command_full(cmd: list[str]) -> tuple[int, str, str]:
+def run_command_full(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        merged_env = os.environ.copy()
+        if env:
+            merged_env.update(env)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=merged_env)
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except Exception as exc:
         return 1, "", str(exc)
+
+
+def run_command_input(cmd: list[str], input_text: str) -> tuple[int, str, str]:
+    try:
+        result = subprocess.run(cmd, input=input_text, capture_output=True, text=True)
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def command_exists(name: str) -> bool:
+    result = subprocess.run(["which", name], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def slugify(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]+", "_", value).strip("_").lower()
+
+
+def lan_cfg(key: str) -> str:
+    return str(MAIN_LAN_CONFIG.get(key, ""))
+
+
+def service_lan_cfg(key: str) -> str:
+    return str(SERVICE_LAN_CONFIG.get(key, ""))
+
+
+def wifi_cfg(key: str) -> str:
+    return str(WIFI_CONFIG.get(key, ""))
 
 
 def is_process_running(name: str) -> bool:
@@ -45,39 +217,304 @@ def parse_mmcli_value(text: str, label: str) -> str:
     pattern = rf"{re.escape(label)}\s*:\s*(.+)"
     match = re.search(pattern, text)
     return match.group(1).strip() if match else ""
-    
+
+
 def get_modem_id() -> str:
     output = run_command(["mmcli", "-L"])
     match = re.search(r"/Modem/(\d+)", output)
     return match.group(1) if match else ""
 
 
+def get_operator_info(modem_id: str) -> dict[str, str]:
+    info = {"mcc": "", "mnc": "", "operator_name": ""}
+    if not modem_id:
+        return info
+    data = run_command(["mmcli", "-m", modem_id, "--3gpp"])
+    if not data:
+        return info
+    info["operator_name"] = clean_ansi(parse_mmcli_value(data, "operator name"))
+    info["mcc"] = clean_ansi(parse_mmcli_value(data, "operator mcc"))
+    info["mnc"] = clean_ansi(parse_mmcli_value(data, "operator mnc"))
+    return info
 
-@app.get("/api/health")
-def health():
-    return {"status": "ok"}
+
+def get_sim_imsi(modem_id: str) -> str:
+    if not modem_id:
+        return ""
+    modem = run_command(["mmcli", "-m", modem_id])
+    sim_path = clean_ansi(parse_mmcli_value(modem, "primary sim path"))
+    match = re.search(r"/SIM/(\d+)", sim_path)
+    if not match:
+        return ""
+    sim_id = match.group(1)
+    sim_info = run_command(["mmcli", "-i", sim_id])
+    return clean_ansi(parse_mmcli_value(sim_info, "imsi"))
 
 
-@app.get("/api/overview")
-def overview():
-    hostname = read_text("/host/etc/hostname", "unknown")
+def get_active_cellular_connection() -> str:
+    output = run_command(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
+    if not output:
+        return ""
+    for line in output.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[1] == "gsm":
+            return parts[0]
+    return ""
 
-    uptime_raw = read_text("/host/proc/uptime", "0 0").split()
-    uptime_seconds = int(float(uptime_raw[0])) if uptime_raw else 0
 
-    default_v4 = run_command(["ip", "route", "show", "default"])
-    default_v6 = run_command(["ip", "-6", "route", "show", "default"])
+def suggest_apn_profile(operator: dict[str, str]) -> dict[str, str] | None:
+    key = f"{operator.get('mcc', '')}{operator.get('mnc', '')}".strip()
+    if key:
+        for item in LTE_APN_PROFILES:
+            if key in item.get("mccmnc", []):
+                return item
+    name = operator.get("operator_name", "").lower()
+    if name:
+        for item in LTE_APN_PROFILES:
+            if item["provider"].lower() in name:
+                return item
+    return None
 
+
+def ensure_auto_apn() -> None:
+    if not LTE_AUTO_APN["enabled"]:
+        return
+    modem_id = get_modem_id()
+    operator = get_operator_info(modem_id)
+    sim_imsi = get_sim_imsi(modem_id)
+    sim_key = sim_imsi or f"{operator.get('mcc', '')}{operator.get('mnc', '')}".strip()
+    override = LTE_SIM_OVERRIDES.get(sim_key, {})
+    if override.get("apn"):
+        profile = override
+    else:
+        profile = suggest_apn_profile(operator)
+    if not profile:
+        return
+    key = profile.get("id", profile.get("apn", ""))
+    now = time.time()
+    if LTE_AUTO_APN["last_key"] == key and (now - LTE_AUTO_APN["last_applied"]) < 20:
+        return
+    conn = get_active_cellular_connection()
+    if not conn:
+        return
+    current_apn = run_command(["nmcli", "-g", "gsm.apn", "connection", "show", conn])
+    current_v4 = run_command(["nmcli", "-g", "ipv4.method", "connection", "show", conn])
+    current_v6 = run_command(["nmcli", "-g", "ipv6.method", "connection", "show", conn])
+    if current_apn == profile["apn"] and current_v4 == profile["ipv4_method"] and current_v6 == profile["ipv6_method"]:
+        return
+    run_command_full(
+        ["nmcli", "connection", "modify", conn, "gsm.apn", profile["apn"], "ipv4.method", profile["ipv4_method"], "ipv6.method", profile["ipv6_method"]]
+    )
+    run_command_full(["nmcli", "connection", "down", conn])
+    run_command_full(["nmcli", "connection", "up", conn])
+    LTE_AUTO_APN["last_key"] = key
+    LTE_AUTO_APN["last_applied"] = now
+
+
+def get_samba_status() -> dict[str, object]:
+    smbd = is_process_running("smbd")
+    nmbd = is_process_running("nmbd")
+    conf_path = "/etc/samba/smb.conf"
+    conf_text = read_text(conf_path, "")
+    shares = []
+    for line in conf_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            name = line[1:-1].strip()
+            if name.lower() != "global":
+                shares.append(name)
     return {
-        "hostname": hostname,
-        "uptime_seconds": uptime_seconds,
-        "default_route_v4": default_v4,
-        "default_route_v6": default_v6,
+        "running": smbd,
+        "nmbd_running": nmbd,
+        "config_path": conf_path if conf_text else "not found",
+        "shares": shares,
+        "smbpasswd_available": command_exists("smbpasswd"),
     }
 
 
-@app.get("/api/interfaces")
-def interfaces():
+def get_service_lan_connection_mode() -> str:
+    ruleset = run_command(["nft", "list", "ruleset"])
+    interface = get_service_lan_interface(ruleset)
+    if interface and has_nft_table(ruleset, "ip", f"nm-shared-{interface}"):
+        return "shared"
+    return "manual"
+
+
+def dhcp_listener_active() -> bool:
+    output = run_command(["ss", "-ulpn"])
+    if not output:
+        return False
+
+    for line in output.splitlines():
+        if ":67 " in line or line.endswith(":67"):
+            return True
+    return False
+
+
+def ipv6_ra_active() -> bool:
+    return (
+        is_process_running("service-lan-ra.py")
+        or (
+            is_process_running("dnsmasq")
+            and Path(SERVICE_LAN_DNSMASQ_IPV6_CONF).exists()
+            and "enable-ra" in read_text(SERVICE_LAN_DNSMASQ_IPV6_CONF)
+        )
+    )
+
+
+def forwarding_active(family: int) -> bool:
+    if family == 4:
+        return read_text("/proc/sys/net/ipv4/ip_forward", "0") == "1"
+    if family == 6:
+        return read_text("/proc/sys/net/ipv6/conf/all/forwarding", "0") == "1"
+    return False
+
+
+def interface_ipv6_disabled(interface: str) -> bool:
+    return read_text(f"/proc/sys/net/ipv6/conf/{interface}/disable_ipv6", "1") == "1"
+
+
+def has_default_route(family: int) -> bool:
+    if family == 4:
+        return bool(run_command(["ip", "route", "show", "default"]))
+    if family == 6:
+        return bool(run_command(["ip", "-6", "route", "show", "default"]))
+    return False
+
+
+def has_nft_table(ruleset: str, family: str, name: str) -> bool:
+    pattern = rf"(^|\n)table\s+{re.escape(family)}\s+{re.escape(name)}\s*\{{"
+    return re.search(pattern, ruleset) is not None
+
+
+def detect_shared_interfaces(ruleset: str) -> list[str]:
+    return re.findall(r"table\s+ip\s+nm-shared-([^\s{]+)", ruleset)
+
+
+def get_service_lan_interface(ruleset: str = "") -> str:
+    configured = service_lan_cfg("interface")
+    if configured:
+        return configured
+
+    if not ruleset:
+        ruleset = run_command(["nft", "list", "ruleset"])
+
+    shared = detect_shared_interfaces(ruleset)
+    if shared:
+        return shared[0]
+
+    return FALLBACK_SERVICE_LAN_INTERFACE
+
+
+def parse_service_listeners() -> list[dict[str, object]]:
+    output = run_command(["ss", "-H", "-ltnup"])
+    if not output:
+        return []
+
+    port_names = {
+        "22": "SSH",
+        "53": "DNS",
+        "67": "DHCP",
+        "80": "HTTP",
+        "137": "NetBIOS",
+        "138": "NetBIOS Datagram",
+        "139": "Samba",
+        "445": "Samba",
+        "3000": "Grafana",
+        "7575": "VirtualHere",
+        "8080": "Network Panel",
+        "8081": "Pi-hole",
+        "9000": "Portainer",
+        "9090": "Cockpit",
+        "9091": "Prometheus",
+        "9100": "Node Exporter",
+        "9443": "Portainer HTTPS",
+        "41641": "Tailscale",
+    }
+
+    services: dict[tuple[str, str], dict[str, object]] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+
+        proto = parts[0]
+        local = parts[4]
+        if local.startswith("["):
+            host_part, _, port = local.rpartition(":")
+            host = host_part.strip("[]")
+        else:
+            host, _, port = local.rpartition(":")
+
+        if not port:
+            continue
+
+        name = port_names.get(port, f"Port {port}")
+        key = (name, proto)
+        service = services.setdefault(
+            key,
+            {"name": name, "type": "listener", "active": True, "ports": set(), "binds": set()},
+        )
+        service["ports"].add(f"{proto}/{port}")
+        service["binds"].add(host or "*")
+
+    result = []
+    for service in sorted(services.values(), key=lambda item: item["name"]):
+        result.append(
+            {
+                "name": service["name"],
+                "type": service["type"],
+                "active": service["active"],
+                "ports": sorted(service["ports"]),
+                "binds": sorted(service["binds"]),
+            }
+        )
+
+    return result
+
+
+def known_port_names() -> dict[str, str]:
+    return {
+        "22": "SSH",
+        "53": "DNS",
+        "67": "DHCP",
+        "80": "HTTP",
+        "137": "NetBIOS",
+        "138": "NetBIOS Datagram",
+        "139": "Samba",
+        "445": "Samba",
+        "3000": "Grafana",
+        "7575": "VirtualHere",
+        "8080": "Network Panel",
+        "8081": "Pi-hole",
+        "9000": "Portainer",
+        "9090": "Cockpit",
+        "9091": "Prometheus",
+        "9100": "Node Exporter",
+        "9443": "Portainer HTTPS",
+        "41641": "Tailscale",
+    }
+
+
+def guess_interface_role(name: str) -> str:
+    if name == "lo":
+        return "loopback"
+    if name.startswith("wwan"):
+        return "cellular"
+    if name.startswith("wl"):
+        return "wifi"
+    if name.startswith("tailscale"):
+        return "overlay"
+    if name.startswith("docker") or name.startswith("br-") or name.startswith("veth"):
+        return "container"
+    if name.startswith("en") or name.startswith("eth"):
+        return "ethernet"
+    return "other"
+
+
+def get_interfaces_data() -> list[dict[str, object]]:
     output = run_command(["ip", "-j", "addr"])
     if not output:
         return []
@@ -114,10 +551,508 @@ def interfaces():
                 "ipv4": ipv4,
                 "ipv6": ipv6,
                 "mtu": iface.get("mtu"),
+                "role": guess_interface_role(name),
+                "flags": iface.get("flags", []),
+                "physical": guess_interface_role(name) in {"ethernet", "wifi", "cellular"},
             }
         )
 
     return result
+
+
+def get_interface_data(name: str) -> dict[str, object]:
+    for iface in get_interfaces_data():
+        if iface["name"] == name:
+            return iface
+    return {
+        "name": name,
+        "state": "missing",
+        "mac": "",
+        "ipv4": [],
+        "ipv6": [],
+        "mtu": None,
+        "role": guess_interface_role(name),
+        "flags": [],
+    }
+
+
+def get_nmcli_device_status(interface: str) -> dict[str, str]:
+    if not command_exists("nmcli"):
+        return {}
+
+    output = run_command(["nmcli", "-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,GENERAL.TYPE", "device", "show", interface])
+    if not output:
+        return {}
+
+    status = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        status[key] = value
+    return {
+        "nm_state": status.get("GENERAL.STATE", ""),
+        "nm_connection": status.get("GENERAL.CONNECTION", ""),
+        "nm_type": status.get("GENERAL.TYPE", ""),
+    }
+
+
+def get_nmcli_connection_status(connection_name: str) -> dict[str, str]:
+    if not command_exists("nmcli"):
+        return {}
+
+    fields = [
+        "connection.id",
+        "connection.interface-name",
+        "ipv4.method",
+        "ipv4.addresses",
+        "ipv4.dns",
+        "ipv4.dns-search",
+        "ipv6.method",
+        "ipv6.addresses",
+        "ipv6.dns",
+    ]
+    output = run_command(["nmcli", "-g", ",".join(fields), "connection", "show", connection_name])
+    if not output:
+        return {}
+
+    values = output.splitlines()
+    data = {}
+    for index, field in enumerate(fields):
+        data[field] = values[index] if index < len(values) else ""
+    return data
+
+
+def parse_default_route(raw: str) -> dict[str, str]:
+    route = {"raw": raw, "via": "", "dev": "", "src": ""}
+    if not raw:
+        return route
+
+    via = re.search(r"\bvia\s+([^\s]+)", raw)
+    dev = re.search(r"\bdev\s+([^\s]+)", raw)
+    src = re.search(r"\bsrc\s+([^\s]+)", raw)
+    if via:
+        route["via"] = via.group(1)
+    if dev:
+        route["dev"] = dev.group(1)
+    if src:
+        route["src"] = src.group(1)
+    return route
+
+
+def is_physical_interface(iface: dict[str, object]) -> bool:
+    role = iface.get("role")
+    return role in {"ethernet", "wifi", "cellular"}
+
+
+def get_physical_interfaces() -> list[dict[str, object]]:
+    return [iface for iface in get_interfaces_data() if is_physical_interface(iface)]
+
+
+def get_lan_interfaces() -> list[dict[str, object]]:
+    result = []
+    target_name = lan_cfg("target_interface")
+    service_name = get_service_lan_interface()
+    for iface in get_interfaces_data():
+        if iface["role"] != "ethernet":
+            continue
+        if iface["name"] in {target_name, service_name} or iface["state"] == "UP":
+            result.append(iface)
+    return result
+
+
+def interface_block_table_name(interface: str) -> str:
+    return f"portal_block_{slugify(interface)}"
+
+
+def interface_block_active(ruleset: str, interface: str) -> bool:
+    return has_nft_table(ruleset, "inet", interface_block_table_name(interface))
+
+
+def set_interface_block(interface: str, blocked: bool) -> tuple[int, str, str]:
+    table = interface_block_table_name(interface)
+    run_command_full(["nft", "delete", "table", "inet", table])
+    if not blocked:
+        return 0, "", ""
+
+    commands = [
+        ["nft", "add", "table", "inet", table],
+        ["nft", f"add chain inet {table} forward {{ type filter hook forward priority -5; policy accept; }}"],
+        ["nft", "add", "rule", "inet", table, "forward", "iifname", interface, "drop"],
+        ["nft", "add", "rule", "inet", table, "forward", "oifname", interface, "drop"],
+    ]
+    stdout_parts = []
+    stderr_parts = []
+    for cmd in commands:
+        code, stdout, stderr = run_command_full(cmd)
+        if stdout:
+            stdout_parts.append(stdout)
+        if stderr:
+            stderr_parts.append(stderr)
+        if code != 0:
+            return code, "\n".join(stdout_parts), "\n".join(stderr_parts)
+    return 0, "\n".join(stdout_parts), "\n".join(stderr_parts)
+
+
+def parse_ip_neighbors(interface: str, family: str) -> dict[str, dict[str, str]]:
+    cmd = ["ip"]
+    if family == "ipv6":
+        cmd.append("-6")
+    cmd.extend(["neigh", "show", "dev", interface])
+
+    neigh_raw = run_command(cmd)
+    neighbors = {}
+    for line in neigh_raw.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+
+        address = parts[0]
+        state = parts[-1]
+        mac = ""
+        if "lladdr" in parts:
+            lladdr_index = parts.index("lladdr")
+            if lladdr_index + 1 < len(parts):
+                mac = parts[lladdr_index + 1]
+
+        neighbors[address] = {"mac": mac, "state": state, "family": family, "interface": interface}
+
+    return neighbors
+
+
+def get_all_lan_clients() -> list[dict[str, str]]:
+    now = int(time.time())
+    leases = []
+    leases_raw = read_text("/host/var/lib/misc/dnsmasq.leases", "")
+    for line in leases_raw.splitlines():
+        parts = line.split()
+        if len(parts) >= 4:
+            try:
+                expires_at = int(parts[0])
+            except ValueError:
+                expires_at = 0
+            if expires_at and expires_at < now:
+                continue
+            leases.append(
+                {
+                    "expires_at": expires_at,
+                    "mac": parts[1].lower(),
+                    "ip": parts[2],
+                    "hostname": parts[3] if parts[3] != "*" else "",
+                    "family": "ipv4",
+                    "interface": get_service_lan_interface(),
+                }
+            )
+
+    lease_by_mac = {}
+    for lease in leases:
+        current = lease_by_mac.get(lease["mac"])
+        if current is None or lease["expires_at"] >= current["expires_at"]:
+            lease_by_mac[lease["mac"]] = lease
+
+    result = []
+    seen = set()
+    for iface in get_lan_interfaces():
+        neighbors = {}
+        neighbors.update(parse_ip_neighbors(iface["name"], "ipv4"))
+        neighbors.update(parse_ip_neighbors(iface["name"], "ipv6"))
+        for address, neigh in neighbors.items():
+            mac = (neigh.get("mac") or "").lower()
+            lease = lease_by_mac.get(mac, {})
+            seen.add((iface["name"], mac, address))
+            result.append(
+                {
+                    "interface": iface["name"],
+                    "ip": address,
+                    "family": neigh["family"],
+                    "mac": neigh.get("mac", ""),
+                    "hostname": lease.get("hostname", ""),
+                    "state": neigh.get("state", "unknown"),
+                }
+            )
+
+    for lease in lease_by_mac.values():
+        key = (lease["interface"], lease["mac"], lease["ip"])
+        if key in seen:
+            continue
+        result.append(
+            {
+                "interface": lease["interface"],
+                "ip": lease["ip"],
+                "family": lease["family"],
+                "mac": lease["mac"],
+                "hostname": lease["hostname"],
+                "state": "lease",
+            }
+        )
+
+    return result
+
+
+def get_active_sessions() -> list[dict[str, str]]:
+    output = run_command(["ss", "-tn", "state", "established"])
+    if not output:
+        return []
+
+    interfaces = get_interfaces_data()
+    ip_to_interface = {}
+    for iface in interfaces:
+        for addr in iface.get("ipv4", []):
+            ip_to_interface[addr] = iface["name"]
+        for addr in iface.get("ipv6", []):
+            ip_to_interface[addr] = iface["name"]
+
+    port_names = known_port_names()
+    sessions = []
+    for line in output.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local = parts[3]
+        peer = parts[4]
+        local_host, _, local_port = local.rpartition(":")
+        peer_host, _, peer_port = peer.rpartition(":")
+        local_host = local_host.strip("[]")
+        peer_host = peer_host.strip("[]")
+        if local_host.startswith("127.") or local_host == "::1":
+            continue
+        sessions.append(
+            {
+                "interface": ip_to_interface.get(local_host, "unknown"),
+                "local_address": local_host,
+                "local_port": local_port,
+                "peer_address": peer_host,
+                "peer_port": peer_port,
+                "service": port_names.get(local_port, f"Port {local_port}"),
+                "family": "ipv6" if ":" in local_host else "ipv4",
+            }
+        )
+    return sessions
+
+
+def get_wifi_scan(interface: str) -> list[dict[str, str]]:
+    if not command_exists("nmcli"):
+        return []
+    run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+    run_command_full(["ip", "link", "set", "dev", interface, "up"])
+    run_command_full(["nmcli", "radio", "wifi", "on"])
+    run_command_full(["nmcli", "dev", "wifi", "rescan", "ifname", interface])
+    output = run_command(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE", "dev", "wifi", "list", "ifname", interface])
+    networks = []
+    for line in output.splitlines():
+        parts = line.split(":")
+        if len(parts) < 4:
+            continue
+        ssid, signal, security, in_use = parts[0], parts[1], parts[2], parts[3]
+        if not ssid:
+            continue
+        networks.append(
+            {
+                "ssid": ssid,
+                "signal": signal,
+                "security": security,
+                "in_use": in_use == "*",
+            }
+        )
+    return networks
+
+
+def get_rfkill_status() -> list[dict[str, str]]:
+    results = []
+    base = Path("/sys/class/rfkill")
+    if not base.exists():
+        return results
+    for entry in base.iterdir():
+        rf_type = read_text(str(entry / "type"), "")
+        name = read_text(str(entry / "name"), "")
+        soft = read_text(str(entry / "soft"), "")
+        hard = read_text(str(entry / "hard"), "")
+        results.append({"type": rf_type, "name": name, "soft": soft, "hard": hard})
+    return results
+
+
+def get_wifi_status() -> dict[str, object]:
+    interface = wifi_cfg("interface")
+    iface = get_interface_data(interface)
+    iface.update(get_nmcli_device_status(interface))
+    return {
+        "interface": interface,
+        "config": dict(WIFI_CONFIG),
+        "device": iface,
+        "scan": get_wifi_scan(interface),
+        "rfkill": get_rfkill_status(),
+        "notes": [
+            "client mode joins an upstream Wi-Fi network",
+            "hotspot mode creates a local AP from wlan0",
+            "wlan0 currently needs to be switched from unmanaged to managed before NetworkManager can own it",
+        ],
+    }
+
+
+def set_nmcli_managed(interface: str) -> tuple[int, str, str]:
+    return run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+
+
+def apply_wifi_mode() -> tuple[int, str, str]:
+    interface = wifi_cfg("interface")
+    mode = wifi_cfg("mode")
+    code, stdout, stderr = set_nmcli_managed(interface)
+    if code != 0:
+        return code, stdout, stderr
+
+    if mode == "hotspot":
+        connection = "portal-hotspot"
+        existing = run_command(["nmcli", "-g", "connection.id", "connection", "show", connection])
+        if existing:
+            base_cmd = ["nmcli", "connection", "modify", connection]
+        else:
+            base_cmd = ["nmcli", "connection", "add", "type", "wifi", "ifname", interface, "con-name", connection, "ssid", wifi_cfg("hotspot_ssid")]
+
+        settings = [
+            "connection.autoconnect", "yes",
+            "802-11-wireless.mode", "ap",
+            "802-11-wireless.ssid", wifi_cfg("hotspot_ssid"),
+            "ipv4.method", wifi_cfg("ipv4_method") or "shared",
+            "ipv6.method", wifi_cfg("ipv6_method") or "auto",
+        ]
+
+        password = wifi_cfg("hotspot_password")
+        if password:
+            settings.extend(["802-11-wireless-security.key-mgmt", "wpa-psk", "802-11-wireless-security.psk", password])
+        else:
+            settings.extend(["802-11-wireless-security.key-mgmt", "none"])
+
+        code, stdout, stderr = run_command_full(base_cmd + settings)
+        if code != 0:
+            return code, stdout, stderr
+        return run_command_full(["nmcli", "connection", "up", connection])
+
+    if wifi_cfg("ssid"):
+        cmd = [
+            "nmcli",
+            "device",
+            "wifi",
+            "connect",
+            wifi_cfg("ssid"),
+            "ifname",
+            interface,
+        ]
+        if wifi_cfg("password"):
+            cmd.extend(["password", wifi_cfg("password")])
+        return run_command_full(cmd)
+
+    return 1, "", "No Wi-Fi SSID configured"
+
+
+def configure_main_lan() -> tuple[int, str, str]:
+    interface = lan_cfg("target_interface")
+
+    def apply_static_fallback(reason: str) -> tuple[int, str, str]:
+        commands = [
+            ["ip", "link", "set", "dev", interface, "up"],
+            ["ip", "-4", "addr", "flush", "dev", interface],
+            ["ip", "-4", "addr", "add", lan_cfg("ipv4_address"), "dev", interface],
+        ]
+        if lan_cfg("ipv6_mode") != "disabled":
+            commands.extend(
+                [
+                    ["ip", "-6", "addr", "flush", "dev", interface, "scope", "global"],
+                    ["ip", "-6", "addr", "add", lan_cfg("ipv6_address"), "dev", interface],
+                ]
+            )
+
+        stdout_parts = []
+        stderr_parts = [reason]
+        for cmd in commands:
+            code, stdout, stderr = run_command_full(cmd)
+            if stdout:
+                stdout_parts.append(stdout)
+            if stderr:
+                stderr_parts.append(stderr)
+            if code != 0:
+                return code, "\n".join(stdout_parts), "\n".join(stderr_parts)
+
+        stderr_parts.append("Applied static fallback. DHCP/shared automation still needs host-side NetworkManager compatibility.")
+        return 0, "\n".join(stdout_parts), "\n".join(stderr_parts)
+
+    if not command_exists("nmcli"):
+        return apply_static_fallback("nmcli is not available in the backend container")
+
+    connection_name = "main-lan"
+    dns_servers = lan_cfg("dns_servers")
+    dns_search = lan_cfg("dns_search")
+
+    run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+
+    existing = run_command(["nmcli", "-g", "connection.id", "connection", "show", connection_name])
+    base_cmd = ["nmcli", "connection", "modify" if existing else "add"]
+    if existing:
+        cmd = base_cmd + [connection_name]
+    else:
+        cmd = base_cmd + ["type", "ethernet", "ifname", interface, "con-name", connection_name]
+
+    settings = [
+        "connection.autoconnect", "yes",
+        "connection.interface-name", interface,
+        "ipv4.method", lan_cfg("ipv4_mode"),
+        "ipv4.addresses", lan_cfg("ipv4_address"),
+        "ipv4.dns", dns_servers,
+        "ipv4.dns-search", dns_search,
+        "ipv6.method", "manual" if lan_cfg("ipv6_mode") != "disabled" else "disabled",
+        "ipv6.addresses", lan_cfg("ipv6_address") if lan_cfg("ipv6_mode") != "disabled" else "",
+        "ipv6.dns", dns_servers,
+    ]
+    code, stdout, stderr = run_command_full(cmd + settings)
+    if code != 0:
+        return apply_static_fallback(stderr or "NetworkManager profile apply failed")
+
+    code, stdout, stderr = run_command_full(["nmcli", "connection", "up", connection_name])
+    if code != 0:
+        return apply_static_fallback(stderr or "Failed to bring main-lan up")
+    return code, stdout, stderr
+
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/overview")
+def overview():
+    hostname = read_text("/host/etc/hostname", "unknown")
+
+    uptime_raw = read_text("/host/proc/uptime", "0 0").split()
+    uptime_seconds = int(float(uptime_raw[0])) if uptime_raw else 0
+
+    default_v4 = run_command(["ip", "route", "show", "default"])
+    default_v6 = run_command(["ip", "-6", "route", "show", "default"])
+
+    interfaces_data = get_interfaces_data()
+    uplinks = [
+        iface for iface in interfaces_data
+        if iface["role"] in {"cellular", "wifi", "overlay"} and (iface["ipv4"] or iface["ipv6"] or iface["state"] == "UP")
+    ]
+    local_lans = [
+        iface for iface in interfaces_data
+        if iface["role"] == "ethernet"
+    ]
+
+    return {
+        "hostname": hostname,
+        "uptime_seconds": uptime_seconds,
+        "default_route_v4": default_v4,
+        "default_route_v6": default_v6,
+        "uplink_ipv4": parse_default_route(default_v4),
+        "uplink_ipv6": parse_default_route(default_v6),
+        "uplinks": uplinks,
+        "local_lans": local_lans,
+    }
+
+
+@app.get("/api/interfaces")
+def interfaces():
+    return get_interfaces_data()
 
 
 @app.get("/api/lte")
@@ -130,9 +1065,12 @@ def lte():
 
     modem = run_command(["mmcli", "-m", modem_id])
     signal = run_command(["mmcli", "-m", modem_id, "--signal-get"])
+    operator = get_operator_info(modem_id)
 
     if not modem:
         return {"available": False}
+
+    ensure_auto_apn()
 
     return {
         "available": True,
@@ -140,7 +1078,9 @@ def lte():
         "power_state": clean_ansi(parse_mmcli_value(modem, "power state")),
         "access_tech": clean_ansi(parse_mmcli_value(modem, "access tech")),
         "signal_quality": clean_ansi(parse_mmcli_value(modem, "signal quality")),
-        "operator_name": clean_ansi(parse_mmcli_value(modem, "operator name")),
+        "operator_name": operator.get("operator_name") or clean_ansi(parse_mmcli_value(modem, "operator name")),
+        "operator_mcc": operator.get("mcc", ""),
+        "operator_mnc": operator.get("mnc", ""),
         "registration": clean_ansi(parse_mmcli_value(modem, "registration")),
         "packet_service_state": clean_ansi(parse_mmcli_value(modem, "packet service state")),
         "rssi": clean_ansi(parse_mmcli_value(signal, "rssi")),
@@ -149,81 +1089,462 @@ def lte():
         "snr": clean_ansi(parse_mmcli_value(signal, "s/n")),
     }
 
+
+@app.get("/api/lte/profile")
+def lte_profile():
+    conn = get_active_cellular_connection()
+    if not conn:
+        return {"available": False, "connection": ""}
+
+    apn = run_command(["nmcli", "-g", "gsm.apn", "connection", "show", conn])
+    ipv4_method = run_command(["nmcli", "-g", "ipv4.method", "connection", "show", conn])
+    ipv6_method = run_command(["nmcli", "-g", "ipv6.method", "connection", "show", conn])
+    return {
+        "available": True,
+        "connection": conn,
+        "apn": apn,
+        "ipv4_method": ipv4_method,
+        "ipv6_method": ipv6_method,
+    }
+
+
+@app.get("/api/lte/apn/options")
+def lte_apn_options():
+    return {"options": LTE_APN_PROFILES}
+
+
+@app.get("/api/lte/apn/suggest")
+def lte_apn_suggest():
+    modem_id = get_modem_id()
+    operator = get_operator_info(modem_id)
+    sim_imsi = get_sim_imsi(modem_id)
+    sim_key = sim_imsi or f"{operator.get('mcc', '')}{operator.get('mnc', '')}".strip()
+    profile = suggest_apn_profile(operator)
+    return {
+        "operator": operator,
+        "suggested": profile or {},
+        "sim_key": sim_key,
+        "override": LTE_SIM_OVERRIDES.get(sim_key, {}),
+    }
+
+
+@app.get("/api/lte/apn/auto")
+def lte_apn_auto_status():
+    return {"enabled": LTE_AUTO_APN["enabled"]}
+
+
+@app.post("/api/lte/apn/auto")
+def lte_apn_auto_update(payload: dict = Body(...)):
+    enabled = str(payload.get("enabled", "")).strip().lower()
+    LTE_AUTO_APN["enabled"] = enabled in {"1", "true", "yes", "on"}
+    return {"ok": True, "enabled": LTE_AUTO_APN["enabled"]}
+
+
+@app.post("/api/lte/apn/apply")
+def lte_apn_apply(payload: dict = Body(...)):
+    conn = get_active_cellular_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="No active cellular connection found")
+
+    profile_id = str(payload.get("profile_id", "")).strip()
+    custom_apn = str(payload.get("apn", "")).strip()
+    ipv4_method = str(payload.get("ipv4_method", "auto")).strip() or "auto"
+    ipv6_method = str(payload.get("ipv6_method", "auto")).strip() or "auto"
+    remember = str(payload.get("remember", "true")).strip().lower() in {"1", "true", "yes", "on"}
+
+    selected = None
+    if profile_id:
+        for item in LTE_APN_PROFILES:
+            if item["id"] == profile_id:
+                selected = item
+                break
+
+    if selected:
+        apn = selected["apn"]
+        ipv4_method = selected["ipv4_method"]
+        ipv6_method = selected["ipv6_method"]
+    else:
+        apn = custom_apn
+
+    if not apn:
+        raise HTTPException(status_code=400, detail="APN is required")
+
+    code, stdout, stderr = run_command_full(
+        ["nmcli", "connection", "modify", conn, "gsm.apn", apn, "ipv4.method", ipv4_method, "ipv6.method", ipv6_method]
+    )
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+
+    modem_id = get_modem_id()
+    operator = get_operator_info(modem_id)
+    sim_imsi = get_sim_imsi(modem_id)
+    sim_key = sim_imsi or f"{operator.get('mcc', '')}{operator.get('mnc', '')}".strip()
+    if remember and sim_key:
+        LTE_SIM_OVERRIDES[sim_key] = {
+            "id": profile_id or "custom",
+            "apn": apn,
+            "ipv4_method": ipv4_method,
+            "ipv6_method": ipv6_method,
+        }
+
+    run_command_full(["nmcli", "connection", "down", conn])
+    code, stdout, stderr = run_command_full(["nmcli", "connection", "up", conn])
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+
+    return {
+        "ok": True,
+        "connection": conn,
+        "apn": apn,
+        "ipv4_method": ipv4_method,
+        "ipv6_method": ipv6_method,
+        "remembered": bool(remember and sim_key),
+    }
+
 @app.get("/api/services")
 def services():
-    return [
+    process_services = [
         {"name": "NetworkManager", "type": "host", "active": is_process_running("NetworkManager")},
         {"name": "ModemManager", "type": "host", "active": is_process_running("ModemManager")},
         {"name": "tailscaled", "type": "host", "active": is_process_running("tailscaled")},
         {"name": "smbd", "type": "host", "active": is_process_running("smbd")},
     ]
 
+    discovered = parse_service_listeners()
+    combined: dict[str, dict[str, object]] = {
+        service["name"]: service for service in process_services if service["active"]
+    }
+    for service in discovered:
+        combined[service["name"]] = service
+
+    return sorted(combined.values(), key=lambda item: item["name"])
+
+
+@app.get("/api/samba/status")
+def samba_status():
+    return get_samba_status()
+
+
+@app.post("/api/samba/control")
+def samba_control(payload: dict = Body(...)):
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=400, detail="Invalid action")
+    if command_exists("systemctl"):
+        code, stdout, stderr = run_command_full(["systemctl", action, "smbd"])
+    elif command_exists("service"):
+        code, stdout, stderr = run_command_full(["service", "smbd", action])
+    else:
+        raise HTTPException(status_code=500, detail="No service manager available")
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+    return {"ok": True}
+
+
+@app.post("/api/samba/user/password")
+def samba_user_password(payload: dict = Body(...)):
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+    if not command_exists("smbpasswd"):
+        raise HTTPException(status_code=500, detail="smbpasswd not available")
+    code, stdout, stderr = run_command_input(["smbpasswd", "-a", "-s", username], f"{password}\n{password}\n")
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+    return {"ok": True}
+
 
 @app.get("/api/service-lan/clients")
 def service_lan_clients():
-    leases = []
-    leases_raw = read_text("/host/var/lib/misc/dnsmasq.leases", "")
-    for line in leases_raw.splitlines():
-        parts = line.split()
-        if len(parts) >= 4:
-            leases.append(
-                {
-                    "expires": parts[0],
-                    "mac": parts[1],
-                    "ip": parts[2],
-                    "hostname": parts[3] if parts[3] != "*" else "",
-                }
-            )
-
-    neigh_raw = run_command(["ip", "neigh", "show", "dev", "enx2cf7f1232c1a"])
-    neigh_map = {}
-    for line in neigh_raw.splitlines():
-        parts = line.split()
-        if len(parts) >= 5:
-            ip = parts[0]
-            mac = parts[4] if parts[3] == "lladdr" else ""
-            state = parts[-1]
-            neigh_map[ip] = {"mac": mac, "state": state}
-
-    result = []
-    for lease in leases:
-        neigh = neigh_map.get(lease["ip"], {})
-        result.append(
-            {
-                "ip": lease["ip"],
-                "mac": lease["mac"] or neigh.get("mac", ""),
-                "hostname": lease["hostname"],
-                "state": neigh.get("state", "unknown"),
-            }
-        )
-
-    return result
+    return get_all_lan_clients()
 
 
 @app.get("/api/service-lan/status")
 def service_lan_status():
     ruleset = run_command(["nft", "list", "ruleset"])
-    internet_enabled = "table inet service_lan" in ruleset and "table ip service_lan_nat" in ruleset
+    interface = get_service_lan_interface(ruleset)
+    filter_enabled = has_nft_table(ruleset, "inet", "service_lan")
+    ipv4_enabled = has_nft_table(ruleset, "ip", "service_lan_nat_v4")
+    ipv6_enabled = has_nft_table(ruleset, "ip6", "service_lan_nat_v6")
+    legacy_ipv4_enabled = has_nft_table(ruleset, "ip", "service_lan_nat")
+    block_enabled = has_nft_table(ruleset, "inet", "service_lan_block")
+    ipv4_active = ipv4_enabled or legacy_ipv4_enabled
+    connection_mode = get_service_lan_connection_mode()
+    dhcp_active = dhcp_listener_active()
+    ra_active = ipv6_ra_active()
+    forwarding_v4 = forwarding_active(4)
+    forwarding_v6 = forwarding_active(6)
+    default_v4 = has_default_route(4)
+    default_v6 = has_default_route(6)
+    interface_v6_disabled = interface_ipv6_disabled(interface)
+    ipv4_path_ready = (
+        service_lan_cfg("enable_ipv4") == "true"
+        and forwarding_v4
+        and default_v4
+        and (filter_enabled or ipv4_active or connection_mode == "shared")
+    )
+    ipv6_path_ready = (
+        service_lan_cfg("enable_ipv6") == "true"
+        and filter_enabled
+        and ipv6_enabled
+        and forwarding_v6
+        and default_v6
+        and ra_active
+        and not interface_v6_disabled
+    )
+    internet_enabled = not block_enabled and (ipv4_path_ready or ipv6_path_ready)
 
     return {
-        "interface": "enx2cf7f1232c1a",
-        "gateway_ip": "192.168.10.1",
-        "dhcp_range": "192.168.10.100-192.168.10.199",
+        "interface": interface,
+        "connection_mode_ipv4": connection_mode,
+        "ipv4_enabled": service_lan_cfg("enable_ipv4") == "true",
+        "ipv6_enabled": service_lan_cfg("enable_ipv6") == "true",
+        "gateway_ipv4": service_lan_cfg("ipv4_gateway") if service_lan_cfg("enable_ipv4") == "true" else "",
+        "ipv4_subnet": service_lan_cfg("ipv4_subnet") if service_lan_cfg("enable_ipv4") == "true" else "",
+        "dhcp_range_ipv4": service_lan_cfg("dhcp_range") if service_lan_cfg("enable_ipv4") == "true" else "",
+        "dhcp_listener_active": dhcp_active,
+        "gateway_ipv6": service_lan_cfg("ipv6_gateway") if service_lan_cfg("enable_ipv6") == "true" else "",
+        "prefix_ipv6": service_lan_cfg("ipv6_prefix") if service_lan_cfg("enable_ipv6") == "true" else "",
+        "interface_ipv6_disabled": interface_v6_disabled,
+        "forwarding_ipv4_active": forwarding_v4,
+        "forwarding_ipv6_active": forwarding_v6,
+        "upstream_ipv4_default_route": default_v4,
+        "upstream_ipv6_default_route": default_v6,
+        "router_advertisements_active": ra_active,
+        "firewall_ipv4_active": ipv4_active,
+        "firewall_ipv6_active": ipv6_enabled,
+        "firewall_filter_active": filter_enabled,
+        "firewall_block_active": block_enabled,
+        "ipv4_path_ready": ipv4_path_ready,
+        "ipv6_path_ready": ipv6_path_ready,
         "internet_enabled": internet_enabled,
     }
+
+
+@app.get("/api/main-lan/status")
+@app.get("/api/lan/profile")
+def lan_profile():
+    target_interface = lan_cfg("target_interface")
+    target = get_interface_data(target_interface)
+    target.update(get_nmcli_device_status(target_interface))
+    ruleset = run_command(["nft", "list", "ruleset"])
+    blocked = interface_block_active(ruleset, target_interface)
+    connection = get_nmcli_connection_status("main-lan")
+
+    return {
+        "name": "Main LAN",
+        "role": lan_cfg("role"),
+        "target_interface": target_interface,
+        "target_interface_status": target,
+        "internet_enabled": not blocked,
+        "blocked_by_portal": blocked,
+        "ipv4_mode": lan_cfg("ipv4_mode"),
+        "ipv4_address": lan_cfg("ipv4_address"),
+        "ipv4_subnet": lan_cfg("ipv4_subnet"),
+        "dhcp_range": lan_cfg("dhcp_range"),
+        "ipv6_mode": lan_cfg("ipv6_mode"),
+        "ipv6_address": lan_cfg("ipv6_address"),
+        "ipv6_prefix": lan_cfg("ipv6_prefix"),
+        "dns_servers": [item.strip() for item in lan_cfg("dns_servers").split(",") if item.strip()],
+        "dns_search": lan_cfg("dns_search"),
+        "nmcli_available": command_exists("nmcli"),
+        "connection": connection,
+        "notes": [
+            "shared = DHCP + NAT for local clients",
+            "manual = static LAN without DHCP/NAT automation",
+            "eth0 needs carrier and NetworkManager management before it can be activated",
+        ],
+    }
+
+
+@app.post("/api/main-lan/apply")
+def main_lan_apply():
+    code, stdout, stderr = configure_main_lan()
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Main LAN apply failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/main-lan/restart")
+def main_lan_restart():
+    if not command_exists("nmcli"):
+        raise HTTPException(status_code=500, detail="nmcli is not available")
+    code, stdout, stderr = run_command_full(["nmcli", "connection", "down", "main-lan"])
+    code2, stdout2, stderr2 = run_command_full(["nmcli", "connection", "up", "main-lan"])
+    if code2 != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code2, "stdout": "\n".join([stdout, stdout2]).strip(), "stderr": "\n".join([stderr, stderr2]).strip()},
+        )
+    return {"ok": True, "stdout": "\n".join([stdout, stdout2]).strip(), "stderr": "\n".join([stderr, stderr2]).strip()}
+
+
+@app.post("/api/main-lan/internet/on")
+def main_lan_internet_on():
+    code, stdout, stderr = set_interface_block(lan_cfg("target_interface"), False)
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Main LAN internet enable failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/main-lan/internet/off")
+def main_lan_internet_off():
+    code, stdout, stderr = set_interface_block(lan_cfg("target_interface"), True)
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Main LAN internet disable failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/interfaces/{interface}/link/up")
+def interface_link_up(interface: str):
+    code, stdout, stderr = run_command_full(["ip", "link", "set", "dev", interface, "up"])
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or f"Failed to bring {interface} up"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/interfaces/{interface}/link/down")
+def interface_link_down(interface: str):
+    code, stdout, stderr = run_command_full(["ip", "link", "set", "dev", interface, "down"])
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or f"Failed to bring {interface} down"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/main-lan/config")
+def update_main_lan_config(payload: dict = Body(...)):
+    allowed = {
+        "target_interface",
+        "role",
+        "ipv4_mode",
+        "ipv4_address",
+        "ipv4_subnet",
+        "dhcp_range",
+        "ipv6_mode",
+        "ipv6_address",
+        "ipv6_prefix",
+        "dns_servers",
+        "dns_search",
+    }
+    for key, value in payload.items():
+        if key in allowed and isinstance(value, str):
+            MAIN_LAN_CONFIG[key] = value.strip()
+    return {"ok": True, "config": MAIN_LAN_CONFIG}
+
+
+@app.get("/api/active-sessions")
+def active_sessions():
+    return get_active_sessions()
+
+
+@app.post("/api/service-lan/config")
+def update_service_lan_config(payload: dict = Body(...)):
+    allowed = {
+        "interface",
+        "ipv4_gateway",
+        "ipv4_subnet",
+        "dhcp_range",
+        "ipv6_gateway",
+        "ipv6_prefix",
+        "enable_ipv4",
+        "enable_ipv6",
+    }
+    for key, value in payload.items():
+        if key in allowed and isinstance(value, str):
+            SERVICE_LAN_CONFIG[key] = value.strip()
+    return {"ok": True, "config": SERVICE_LAN_CONFIG}
+
+
+@app.get("/api/wifi/status")
+def wifi_status():
+    return get_wifi_status()
+
+
+@app.post("/api/wifi/config")
+def update_wifi_config(payload: dict = Body(...)):
+    allowed = {
+        "interface",
+        "mode",
+        "ssid",
+        "password",
+        "hotspot_ssid",
+        "hotspot_password",
+        "ipv4_method",
+        "ipv4_address",
+        "ipv6_method",
+        "ipv6_address",
+    }
+    for key, value in payload.items():
+        if key in allowed and isinstance(value, str):
+            WIFI_CONFIG[key] = value.strip()
+    return {"ok": True, "config": WIFI_CONFIG}
+
+
+@app.post("/api/wifi/apply")
+def wifi_apply():
+    code, stdout, stderr = apply_wifi_mode()
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Wi-Fi apply failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
 
 
 
 @app.post("/api/service-lan/internet/on")
 def service_lan_internet_on():
-    code, stdout, stderr = run_command_full(["/usr/local/bin/service-lan-inet-on.sh"])
-    return {"ok": code == 0, "code": code, "stdout": stdout, "stderr": stderr}
+    env = {
+        "SERVICE_LAN_INTERFACE": get_service_lan_interface(),
+        "SERVICE_LAN_IPV4_GATEWAY": service_lan_cfg("ipv4_gateway"),
+        "SERVICE_LAN_IPV4_SUBNET": service_lan_cfg("ipv4_subnet"),
+        "SERVICE_LAN_DHCP_RANGE": service_lan_cfg("dhcp_range"),
+        "SERVICE_LAN_IPV6_GATEWAY": service_lan_cfg("ipv6_gateway"),
+        "SERVICE_LAN_IPV6_PREFIX": service_lan_cfg("ipv6_prefix"),
+        "SERVICE_LAN_ENABLE_IPV4": service_lan_cfg("enable_ipv4"),
+        "SERVICE_LAN_ENABLE_IPV6": service_lan_cfg("enable_ipv6"),
+    }
+    code, stdout, stderr = run_command_full(["/usr/local/bin/service-lan-inet-on.sh"], env=env)
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Service LAN enable failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
 
 
 @app.post("/api/service-lan/internet/off")
 def service_lan_internet_off():
-    code, stdout, stderr = run_command_full(["/usr/local/bin/service-lan-inet-off.sh"])
-    return {"ok": code == 0, "code": code, "stdout": stdout, "stderr": stderr}
+    code, stdout, stderr = run_command_full(
+        ["/usr/local/bin/service-lan-inet-off.sh"],
+        env={
+            "SERVICE_LAN_INTERFACE": get_service_lan_interface(),
+            "SERVICE_LAN_IPV6_GATEWAY": service_lan_cfg("ipv6_gateway"),
+            "SERVICE_LAN_IPV6_PREFIX": service_lan_cfg("ipv6_prefix"),
+        },
+    )
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Service LAN disable failed"},
+        )
+    return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -237,67 +1558,177 @@ def home():
       <title>R1000 Network Panel</title>
       <style>
         body {
-          font-family: Arial, sans-serif;
-          background: #0f172a;
+          font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+          background:
+            radial-gradient(circle at top, rgba(59, 130, 246, 0.22), transparent 28%),
+            linear-gradient(180deg, #07111f 0%, #0f172a 46%, #121826 100%);
           color: #e5e7eb;
           margin: 0;
-          padding: 24px;
+          min-height: 100vh;
+          padding: 16px;
         }
         h1, h2 { margin-top: 0; }
+        h2 {
+          font-size: 18px;
+          margin-bottom: 12px;
+        }
         .topbar {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 16px;
+          margin-bottom: 12px;
         }
         .grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 16px;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 12px;
         }
         .card {
-          background: #111827;
-          border: 1px solid #1f2937;
-          border-radius: 16px;
-          padding: 16px;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+          background: rgba(15, 23, 42, 0.88);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          border-radius: 18px;
+          padding: 14px;
+          box-shadow: 0 12px 28px rgba(2, 6, 23, 0.28);
+          backdrop-filter: blur(12px);
           overflow-wrap: anywhere;
           word-break: break-word;
         }
+        details.menu {
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          border-radius: 12px;
+          padding: 6px 8px;
+          background: rgba(8, 15, 29, 0.6);
+        }
+        details.menu > summary {
+          list-style: none;
+          cursor: pointer;
+          font-weight: 700;
+          font-size: 12px;
+          color: #e2e8f0;
+        }
+        details.menu > summary::-webkit-details-marker {
+          display: none;
+        }
+        .menu-content {
+          margin-top: 8px;
+        }
+        .dense {
+          display: grid;
+          gap: 8px;
+        }
+        .metric {
+          padding: 8px 10px;
+          border-radius: 12px;
+          background: rgba(15, 23, 42, 0.55);
+          border: 1px solid rgba(148, 163, 184, 0.1);
+        }
         .label {
-          color: #9ca3af;
-          font-size: 14px;
+          color: #94a3b8;
+          font-size: 12px;
         }
         .value {
-          font-size: 20px;
+          font-size: 16px;
           font-weight: 700;
-          margin-top: 6px;
+          margin-top: 4px;
         }
-        ul { padding-left: 18px; }
+        ul {
+          padding-left: 18px;
+          margin: 0;
+        }
+        li {
+          margin-bottom: 6px;
+          line-height: 1.35;
+        }
         .route {
-          background: #0b1220;
-          border: 1px solid #1f2937;
+          background: rgba(8, 15, 29, 0.72);
+          border: 1px solid rgba(148, 163, 184, 0.14);
           border-radius: 12px;
-          padding: 10px;
-          margin-top: 10px;
+          padding: 8px 10px;
+          margin-top: 8px;
           font-family: monospace;
-          font-size: 13px;
-          line-height: 1.5;
+          font-size: 12px;
+          line-height: 1.4;
           white-space: pre-wrap;
           word-break: break-word;
           overflow-wrap: anywhere;
         }
         button {
-          background: #2563eb;
+          background: linear-gradient(135deg, #0ea5e9, #2563eb);
           color: white;
           border: none;
           border-radius: 10px;
-          padding: 10px 14px;
+          padding: 8px 11px;
           font-weight: 700;
+          font-size: 12px;
           cursor: pointer;
         }
         button:hover {
-          background: #1d4ed8;
+          filter: brightness(1.08);
+        }
+        button.secondary {
+          background: rgba(30, 41, 59, 0.88);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+        .pill {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 999px;
+          padding: 3px 8px;
+          font-size: 11px;
+          font-weight: 700;
+          margin-top: 6px;
+          background: rgba(14, 165, 233, 0.14);
+          color: #7dd3fc;
+        }
+        .chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          border-radius: 999px;
+          padding: 2px 8px;
+          font-size: 11px;
+          font-weight: 700;
+          background: rgba(15, 23, 42, 0.7);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          color: #cbd5f5;
+        }
+        .controls {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 10px;
+        }
+        .compact-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 8px;
+        }
+        .hint {
+          color: #7c8aa5;
+          font-size: 11px;
+          margin-top: 8px;
+        }
+        input, select {
+          width: 100%;
+          box-sizing: border-box;
+          background: rgba(8, 15, 29, 0.92);
+          color: #e5e7eb;
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          border-radius: 10px;
+          padding: 8px 10px;
+          font-size: 12px;
+          margin-top: 4px;
+        }
+        select.compact {
+          padding: 6px 8px;
+        }
+        a.service-link {
+          color: #7dd3fc;
+          text-decoration: none;
+          font-weight: 700;
+        }
+        a.service-link:hover {
+          text-decoration: underline;
         }
       </style>
     </head>
@@ -317,12 +1748,28 @@ def home():
           <div id="lte">Loading...</div>
         </div>
         <div class="card">
+          <h2>LTE APN</h2>
+          <div id="lte-apn">Loading...</div>
+        </div>
+        <div class="card">
           <h2>Services</h2>
           <div id="services">Loading...</div>
         </div>
         <div class="card">
+          <h2>Samba</h2>
+          <div id="samba-panel">Loading...</div>
+        </div>
+        <div class="card">
           <h2>Service LAN</h2>
           <div id="service-lan">Loading...</div>
+        </div>
+        <div class="card">
+          <h2>Main LAN</h2>
+          <div id="main-lan">Loading...</div>
+        </div>
+        <div class="card">
+          <h2>Wi-Fi</h2>
+          <div id="wifi-panel">Loading...</div>
         </div>
       </div>
 
@@ -336,76 +1783,633 @@ def home():
         <div id="service-lan-clients">Loading...</div>
       </div>
 
+      <div class="card" style="margin-top:16px;">
+        <h2>Active Sessions</h2>
+        <div id="active-sessions">Loading...</div>
+      </div>
+
       <script>
+        const appState = {
+          drafts: {},
+        };
+
         async function loadJSON(url) {
           const res = await fetch(url);
           return await res.json();
+        }
+
+        function draftValue(key, fallback) {
+          return Object.prototype.hasOwnProperty.call(appState.drafts, key)
+            ? appState.drafts[key]
+            : (fallback ?? '');
+        }
+
+        function bindDraft(id, key) {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.oninput = () => {
+            appState.drafts[key] = el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
+          };
+          el.onchange = el.oninput;
+        }
+
+        function clearDraft(prefix) {
+          Object.keys(appState.drafts)
+            .filter(key => key.startsWith(prefix))
+            .forEach(key => delete appState.drafts[key]);
         }
 
         async function toggleServiceLanInternet(mode) {
           const endpoint = mode === 'on'
             ? '/api/service-lan/internet/on'
             : '/api/service-lan/internet/off';
+          await postAction(endpoint, 'Failed to change Service LAN internet state');
+          await render();
+        }
 
+        async function postAction(endpoint, fallbackMessage) {
           const res = await fetch(endpoint, { method: 'POST' });
           if (!res.ok) {
-            alert('Failed to change Service LAN internet state');
-            return;
+            let message = fallbackMessage;
+            try {
+              const payload = await res.json();
+              const detail = payload.detail || payload;
+              if (typeof detail === 'string') {
+                message = detail;
+              } else if (detail && detail.stderr) {
+                message = detail.stderr;
+              }
+            } catch (err) {
+            }
+            alert(message);
+            return false;
           }
 
+          const payload = await res.json();
+          if (!payload.ok) {
+            alert(payload.stderr || fallbackMessage);
+            return false;
+          }
+
+          return true;
+        }
+
+        async function applyMainLan() {
+          const ok = await postAction('/api/main-lan/apply', 'Failed to apply Main LAN profile');
+          if (ok) await render();
+        }
+
+        async function saveMainLanConfig() {
+          const payload = {
+            target_interface: document.getElementById('main-lan-target-interface').value,
+            role: document.getElementById('main-lan-role').value,
+            ipv4_mode: document.getElementById('main-lan-ipv4-mode').value,
+            ipv4_address: document.getElementById('main-lan-ipv4-address').value,
+            ipv4_subnet: document.getElementById('main-lan-ipv4-subnet').value,
+            dhcp_range: document.getElementById('main-lan-dhcp-range').value,
+            ipv6_mode: document.getElementById('main-lan-ipv6-mode').value,
+            ipv6_address: document.getElementById('main-lan-ipv6-address').value,
+            ipv6_prefix: document.getElementById('main-lan-ipv6-prefix').value,
+            dns_servers: document.getElementById('main-lan-dns-servers').value,
+            dns_search: document.getElementById('main-lan-dns-search').value,
+          };
+          const res = await fetch('/api/main-lan/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            alert('Failed to save Main LAN configuration');
+            return;
+          }
+          clearDraft('main_lan.');
           await render();
+        }
+
+        async function saveServiceLanConfig() {
+          const payload = {
+            interface: document.getElementById('service-lan-interface').value,
+            ipv4_gateway: document.getElementById('service-lan-ipv4-gateway').value,
+            ipv4_subnet: document.getElementById('service-lan-ipv4-subnet').value,
+            dhcp_range: document.getElementById('service-lan-dhcp-range').value,
+            ipv6_gateway: document.getElementById('service-lan-ipv6-gateway').value,
+            ipv6_prefix: document.getElementById('service-lan-ipv6-prefix').value,
+            enable_ipv4: document.getElementById('service-lan-enable-ipv4').value,
+            enable_ipv6: document.getElementById('service-lan-enable-ipv6').value,
+          };
+          const res = await fetch('/api/service-lan/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            alert('Failed to save Service LAN configuration');
+            return;
+          }
+          clearDraft('service_lan.');
+          await render();
+        }
+
+        async function saveWifiConfig() {
+          const payload = {
+            interface: document.getElementById('wifi-interface').value,
+            mode: document.getElementById('wifi-mode').value,
+            ssid: document.getElementById('wifi-ssid').value,
+            password: document.getElementById('wifi-password').value,
+            hotspot_ssid: document.getElementById('wifi-hotspot-ssid').value,
+            hotspot_password: document.getElementById('wifi-hotspot-password').value,
+            ipv4_method: document.getElementById('wifi-ipv4-method').value,
+            ipv4_address: document.getElementById('wifi-ipv4-address').value,
+            ipv6_method: document.getElementById('wifi-ipv6-method').value,
+            ipv6_address: document.getElementById('wifi-ipv6-address').value,
+          };
+          const res = await fetch('/api/wifi/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            alert('Failed to save Wi-Fi configuration');
+            return;
+          }
+          clearDraft('wifi.');
+          await render();
+        }
+
+        async function applyWifi() {
+          const ok = await postAction('/api/wifi/apply', 'Failed to apply Wi-Fi configuration');
+          if (ok) await render();
+        }
+
+        async function restartMainLan() {
+          const ok = await postAction('/api/main-lan/restart', 'Failed to restart Main LAN connection');
+          if (ok) await render();
+        }
+
+        async function toggleMainLanInternet(mode) {
+          const endpoint = mode === 'on'
+            ? '/api/main-lan/internet/on'
+            : '/api/main-lan/internet/off';
+          const ok = await postAction(endpoint, 'Failed to change Main LAN internet state');
+          if (ok) await render();
+        }
+
+        async function applyLteApn() {
+          const payload = {
+            profile_id: document.getElementById('lte-apn-profile').value,
+            apn: document.getElementById('lte-apn-custom').value,
+            ipv4_method: document.getElementById('lte-ipv4-method').value,
+            ipv6_method: document.getElementById('lte-ipv6-method').value,
+            remember: document.getElementById('lte-apn-remember').value,
+          };
+          const res = await fetch('/api/lte/apn/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            alert('Failed to apply LTE APN settings');
+            return;
+          }
+          await render();
+        }
+
+        async function applySuggestedApn(profileId) {
+          if (!profileId) return;
+          document.getElementById('lte-apn-profile').value = profileId;
+          document.getElementById('lte-apn-custom').value = '';
+          await applyLteApn();
+        }
+
+        async function toggleAutoApn(enabled) {
+          const res = await fetch('/api/lte/apn/auto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          });
+          if (!res.ok) {
+            alert('Failed to update auto APN setting');
+            return;
+          }
+          await render();
+        }
+
+        function updateApnFields() {
+          const select = document.getElementById('lte-apn-profile');
+          if (!select || !window.lteApnOptions) return;
+          const id = select.value;
+          const option = window.lteApnOptions.find(o => o.id === id);
+          if (!option) return;
+          document.getElementById('lte-apn-custom').value = option.apn;
+          document.getElementById('lte-ipv4-method').value = option.ipv4_method;
+          document.getElementById('lte-ipv6-method').value = option.ipv6_method;
+          const details = document.getElementById('lte-apn-details');
+          if (details) {
+            details.innerText = `${option.provider} | APN: ${option.apn} | v4: ${option.ipv4_method} | v6: ${option.ipv6_method}`;
+          }
+        }
+
+        async function controlSamba(action) {
+          const res = await fetch('/api/samba/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+          });
+          if (!res.ok) {
+            alert('Failed to control Samba');
+            return;
+          }
+          await render();
+        }
+
+        async function setSambaPassword() {
+          const payload = {
+            username: document.getElementById('samba-username').value,
+            password: document.getElementById('samba-password').value,
+          };
+          const res = await fetch('/api/samba/user/password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            alert('Failed to set Samba password');
+            return;
+          }
+          alert('Samba password updated');
+          await render();
+        }
+
+        async function setLinkState(name, state) {
+          const endpoint = `/api/interfaces/${name}/link/${state}`;
+          const ok = await postAction(endpoint, `Failed to set ${name} ${state}`);
+          if (ok) await render();
+        }
+
+        function getServiceUrl(service) {
+          const host = window.location.hostname;
+          const currentProtocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+          const ports = service.ports || [];
+          const hasPort = (value) => ports.includes(value);
+
+          if (service.name === 'Network Panel') {
+            return window.location.origin;
+          }
+          if (service.name === 'Cockpit' || hasPort('tcp/9090')) {
+            return `https://${host}:9090`;
+          }
+          if (service.name === 'Portainer HTTPS' || hasPort('tcp/9443')) {
+            return `https://${host}:9443`;
+          }
+          if (service.name === 'Portainer' || hasPort('tcp/9000')) {
+            return `http://${host}:9000`;
+          }
+          if (service.name === 'Grafana' || hasPort('tcp/3000')) {
+            return `http://${host}:3000`;
+          }
+          if (service.name === 'Prometheus' || hasPort('tcp/9091')) {
+            return `http://${host}:9091`;
+          }
+          if (service.name === 'Pi-hole' || hasPort('tcp/8081')) {
+            return `http://${host}:8081`;
+          }
+          if (service.name === 'SSH' || hasPort('tcp/22')) {
+            return `ssh://${host}`;
+          }
+
+          const tcpPort = ports.find(p => p.startsWith('tcp/'));
+          if (!tcpPort) {
+            return '';
+          }
+
+          const port = tcpPort.split('/')[1];
+          return `${currentProtocol}//${host}:${port}`;
         }
 
         async function render() {
           const overview = await loadJSON('/api/overview');
           const lte = await loadJSON('/api/lte');
+          const lteProfile = await loadJSON('/api/lte/profile');
+          const lteOptions = await loadJSON('/api/lte/apn/options');
+          const lteSuggest = await loadJSON('/api/lte/apn/suggest');
+          const lteAuto = await loadJSON('/api/lte/apn/auto');
           const services = await loadJSON('/api/services');
+          const samba = await loadJSON('/api/samba/status');
           const interfaces = await loadJSON('/api/interfaces');
           const serviceLan = await loadJSON('/api/service-lan/status');
           const serviceLanClients = await loadJSON('/api/service-lan/clients');
+          const lanProfile = await loadJSON('/api/main-lan/status');
+          const activeSessions = await loadJSON('/api/active-sessions');
+          const wifi = await loadJSON('/api/wifi/status');
 
           document.getElementById('overview').innerHTML = `
-            <div><span class="label">Hostname:</span> <span class="value">${overview.hostname}</span></div>
-            <div><span class="label">Uptime (sec):</span> <span class="value">${overview.uptime_seconds}</span></div>
+            <div class="compact-grid">
+              <div class="metric">
+                <div class="label">Hostname</div>
+                <div class="value">${overview.hostname}</div>
+              </div>
+              <div class="metric">
+                <div class="label">Uptime (sec)</div>
+                <div class="value">${overview.uptime_seconds}</div>
+              </div>
+            </div>
+            <div class="pill">Uplink Summary</div>
 
             <div class="route">
-              <div class="label">Default IPv4</div>
-              <div>${overview.default_route_v4 || '-'}</div>
+              <div class="label">Primary IPv4 Uplink</div>
+              <div>Interface: ${overview.uplink_ipv4.dev || '-'}</div>
+              <div>Gateway: ${overview.uplink_ipv4.via || '-'}</div>
+              <div>Source: ${overview.uplink_ipv4.src || '-'}</div>
             </div>
 
             <div class="route">
-              <div class="label">Default IPv6</div>
-              <div>${overview.default_route_v6 || '-'}</div>
+              <div class="label">Primary IPv6 Uplink</div>
+              <div>Interface: ${overview.uplink_ipv6.dev || '-'}</div>
+              <div>Gateway: ${overview.uplink_ipv6.via || '-'}</div>
+              <div>Source: ${overview.uplink_ipv6.src || '-'}</div>
+            </div>
+
+            <div class="route">
+              <div class="label">Detected Uplinks</div>
+              <div>${(overview.uplinks || []).map(i => `${i.name} (${i.role}, ${i.state})`).join('<br>') || '-'}</div>
+            </div>
+
+            <div class="route">
+              <div class="label">Local LAN Ports</div>
+              <div>${(overview.local_lans || []).map(i => `${i.name} (${i.state}) IPv4: ${(i.ipv4 || []).join(', ') || '-'} IPv6: ${(i.ipv6 || []).join(', ') || '-'}`).join('<br>') || '-'}</div>
             </div>
           `;
 
           document.getElementById('lte').innerHTML = `
-            <div><span class="label">Available:</span> <span class="value">${lte.available}</span></div>
-            <div><span class="label">State:</span> <span class="value">${lte.state || '-'}</span></div>
-            <div><span class="label">Operator:</span> <span class="value">${lte.operator_name || '-'}</span></div>
-            <div><span class="label">Signal:</span> <span class="value">${lte.signal_quality || '-'}</span></div>
-            <div><span class="label">Tech:</span> <span class="value">${lte.access_tech || '-'}</span></div>
-            <div><span class="label">RSSI:</span> <span class="value">${lte.rssi || '-'}</span></div>
-            <div><span class="label">RSRP:</span> <span class="value">${lte.rsrp || '-'}</span></div>
-            <div><span class="label">RSRQ:</span> <span class="value">${lte.rsrq || '-'}</span></div>
-            <div><span class="label">SNR:</span> <span class="value">${lte.snr || '-'}</span></div>
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Available</div><div class="value">${lte.available}</div></div>
+              <div class="metric"><div class="label">State</div><div class="value">${lte.state || '-'}</div></div>
+              <div class="metric"><div class="label">Operator</div><div class="value">${lte.operator_name || '-'}</div></div>
+              <div class="metric"><div class="label">Signal</div><div class="value">${lte.signal_quality || '-'}</div></div>
+              <div class="metric"><div class="label">Tech</div><div class="value">${lte.access_tech || '-'}</div></div>
+              <div class="metric"><div class="label">RSSI</div><div class="value">${lte.rssi || '-'}</div></div>
+              <div class="metric"><div class="label">RSRP</div><div class="value">${lte.rsrp || '-'}</div></div>
+              <div class="metric"><div class="label">RSRQ</div><div class="value">${lte.rsrq || '-'}</div></div>
+              <div class="metric"><div class="label">SNR</div><div class="value">${lte.snr || '-'}</div></div>
+            </div>
           `;
+
+          const suggestedId = (lteSuggest.override && lteSuggest.override.id) ? lteSuggest.override.id : ((lteSuggest.suggested && lteSuggest.suggested.id) || '');
+          window.lteApnOptions = lteOptions.options || [];
+          document.getElementById('lte-apn').innerHTML = `
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Connection</div><div class="value">${lteProfile.connection || '-'}</div></div>
+              <div class="metric"><div class="label">Current APN</div><div class="value">${lteProfile.apn || '-'}</div></div>
+              <div class="metric"><div class="label">IPv4 Method</div><div class="value">${lteProfile.ipv4_method || '-'}</div></div>
+              <div class="metric"><div class="label">IPv6 Method</div><div class="value">${lteProfile.ipv6_method || '-'}</div></div>
+              <div class="metric"><div class="label">Operator MCC/MNC</div><div class="value">${lte.operator_mcc || '-'}/${lte.operator_mnc || '-'}</div></div>
+            </div>
+            <details class="menu">
+              <summary>Auto Apply</summary>
+              <div class="menu-content compact-grid">
+                <div class="metric">
+                  <div class="label">Auto Apply APN</div>
+                  <select class="compact" id="lte-auto-apn" onchange="toggleAutoApn(this.value === 'true')">
+                    ${['true', 'false'].map(v => `<option value="${v}" ${(lteAuto.enabled ? 'true' : 'false') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="metric"><div class="label">Suggested</div><div class="value">${(lteSuggest.suggested && lteSuggest.suggested.provider) ? `${lteSuggest.suggested.provider} (${lteSuggest.suggested.apn})` : '-'}</div></div>
+              </div>
+              <div class="controls">
+                <button onclick="applySuggestedApn('${(lteSuggest.suggested && lteSuggest.suggested.id) || ''}')">Apply Suggested</button>
+              </div>
+            </details>
+            <details class="menu" style="margin-top:8px;">
+              <summary>APN Presets</summary>
+              <div class="menu-content compact-grid">
+                <div class="metric">
+                  <div class="label">Provider</div>
+                  <select class="compact" id="lte-apn-profile" onchange="updateApnFields()">
+                    ${(lteOptions.options || []).map(opt => `<option value="${opt.id}" ${suggestedId === opt.id ? 'selected' : ''}>${opt.country} - ${opt.provider} (${opt.apn})</option>`).join('')}
+                  </select>
+                </div>
+                <div class="metric"><div class="label">Custom APN</div><input id="lte-apn-custom" placeholder="optional" value="" /></div>
+                <div class="metric">
+                  <div class="label">IPv4 Method</div>
+                  <select class="compact" id="lte-ipv4-method">
+                    ${['auto', 'disabled'].map(v => `<option value="${v}">${v}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="metric">
+                  <div class="label">IPv6 Method</div>
+                  <select class="compact" id="lte-ipv6-method">
+                    ${['auto', 'disabled'].map(v => `<option value="${v}">${v}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="metric">
+                  <div class="label">Remember For This SIM</div>
+                  <select class="compact" id="lte-apn-remember">
+                    ${['true', 'false'].map(v => `<option value="${v}" ${v === 'true' ? 'selected' : ''}>${v}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+              <div class="controls">
+                <button onclick="applyLteApn()">Apply APN</button>
+              </div>
+            </details>
+            <div class="route" id="lte-apn-details">Select a provider to see APN settings.</div>
+            ${lteSuggest.override && lteSuggest.override.apn ? `<div class="chip">Saved override for SIM: ${lteSuggest.override.apn} (v4 ${lteSuggest.override.ipv4_method}, v6 ${lteSuggest.override.ipv6_method})</div>` : ''}
+            <div class="hint">APN change will reconnect LTE for a few seconds.</div>
+          `;
+          updateApnFields();
 
           document.getElementById('services').innerHTML = `
             <ul>
-              ${services.map(s => `<li><strong>${s.name}</strong>: ${s.active ? 'UP' : 'DOWN'}</li>`).join('')}
+              ${services.map(s => {
+                const url = getServiceUrl(s);
+                return `<li><strong>${s.name}</strong>: ${s.active ? 'UP' : 'DOWN'}${s.ports ? ` (${s.ports.join(', ')})` : ''}${url ? ` <a class="service-link" href="${url}" target="_blank" rel="noreferrer">Open</a>` : ''}</li>`;
+              }).join('')}
             </ul>
           `;
 
-          document.getElementById('service-lan').innerHTML = `
-            <div><span class="label">Interface:</span> <span class="value">${serviceLan.interface}</span></div>
-            <div><span class="label">Gateway:</span> <span class="value">${serviceLan.gateway_ip}</span></div>
-            <div><span class="label">DHCP Range:</span> <span class="value">${serviceLan.dhcp_range}</span></div>
-            <div><span class="label">Internet:</span> <span class="value">${serviceLan.internet_enabled ? 'ON' : 'OFF'}</span></div>
-            <div style="margin-top: 12px; display:flex; gap:10px; flex-wrap:wrap;">
-              <button onclick="toggleServiceLanInternet('on')">Enable Internet</button>
-              <button onclick="toggleServiceLanInternet('off')">Disable Internet</button>
+          document.getElementById('samba-panel').innerHTML = `
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Running</div><div class="value">${samba.running ? 'UP' : 'DOWN'}</div></div>
+              <div class="metric"><div class="label">NetBIOS</div><div class="value">${samba.nmbd_running ? 'UP' : 'DOWN'}</div></div>
+              <div class="metric"><div class="label">Config</div><div class="value">${samba.config_path || '-'}</div></div>
+              <div class="metric"><div class="label">Shares</div><div class="value">${(samba.shares || []).join(', ') || '-'}</div></div>
             </div>
+            <div class="controls">
+              <button onclick="controlSamba('start')">Start</button>
+              <button onclick="controlSamba('stop')">Stop</button>
+              <button class="secondary" onclick="controlSamba('restart')">Restart</button>
+            </div>
+            <div class="pill">Samba User</div>
+            <div class="compact-grid" style="margin-top:8px;">
+              <div class="metric"><div class="label">Username</div><input id="samba-username" placeholder="user" /></div>
+              <div class="metric"><div class="label">Password</div><input id="samba-password" type="password" placeholder="new password" /></div>
+            </div>
+            <div class="controls">
+              <button onclick="setSambaPassword()">Set Password</button>
+            </div>
+            <div class="hint">${samba.smbpasswd_available ? 'Password updates use smbpasswd.' : 'smbpasswd not available.'}</div>
+          `;
+
+          document.getElementById('service-lan').innerHTML = `
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Interface</div><div class="value">${serviceLan.interface}</div></div>
+              <div class="metric"><div class="label">IPv4 Mode</div><div class="value">${serviceLan.connection_mode_ipv4 || '-'}</div></div>
+              <div class="metric"><div class="label">IPv4 Gateway</div><div class="value">${serviceLan.gateway_ipv4 || '-'}</div></div>
+              <div class="metric"><div class="label">IPv4 Subnet</div><div class="value">${serviceLan.ipv4_subnet || '-'}</div></div>
+              <div class="metric"><div class="label">DHCP Range</div><div class="value">${serviceLan.dhcp_range_ipv4 || '-'}</div></div>
+              <div class="metric"><div class="label">DHCP Listener</div><div class="value">${serviceLan.dhcp_listener_active ? 'UP' : 'DOWN'}</div></div>
+              <div class="metric"><div class="label">IPv6 Gateway</div><div class="value">${serviceLan.gateway_ipv6 || '-'}</div></div>
+              <div class="metric"><div class="label">IPv6 Prefix</div><div class="value">${serviceLan.prefix_ipv6 || '-'}</div></div>
+              <div class="metric"><div class="label">Internet</div><div class="value">${serviceLan.internet_enabled ? 'ON' : 'OFF'}</div></div>
+            </div>
+            <div class="pill">Editable Controls</div>
+            <div class="compact-grid" style="margin-top:8px;">
+              <div class="metric"><div class="label">Interface</div><input id="service-lan-interface" value="${draftValue('service_lan.interface', serviceLan.interface)}" /></div>
+              <div class="metric"><div class="label">IPv4 Gateway</div><input id="service-lan-ipv4-gateway" value="${draftValue('service_lan.ipv4_gateway', serviceLan.gateway_ipv4 || '')}" /></div>
+              <div class="metric"><div class="label">IPv4 Subnet</div><input id="service-lan-ipv4-subnet" value="${draftValue('service_lan.ipv4_subnet', serviceLan.ipv4_subnet || '')}" /></div>
+              <div class="metric"><div class="label">DHCP Range</div><input id="service-lan-dhcp-range" value="${draftValue('service_lan.dhcp_range', serviceLan.dhcp_range_ipv4 || '')}" /></div>
+              <div class="metric"><div class="label">IPv6 Gateway</div><input id="service-lan-ipv6-gateway" value="${draftValue('service_lan.ipv6_gateway', serviceLan.gateway_ipv6 || '')}" /></div>
+              <div class="metric"><div class="label">IPv6 Prefix</div><input id="service-lan-ipv6-prefix" value="${draftValue('service_lan.ipv6_prefix', serviceLan.prefix_ipv6 || '')}" /></div>
+              <div class="metric">
+                <div class="label">Enable IPv4</div>
+                <select id="service-lan-enable-ipv4">
+                  ${['true', 'false'].map(v => `<option value="${v}" ${draftValue('service_lan.enable_ipv4', serviceLan.ipv4_enabled ? 'true' : 'false') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric">
+                <div class="label">Enable IPv6</div>
+                <select id="service-lan-enable-ipv6">
+                  ${['true', 'false'].map(v => `<option value="${v}" ${draftValue('service_lan.enable_ipv6', serviceLan.ipv6_enabled ? 'true' : 'false') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="controls">
+              <button onclick="saveServiceLanConfig()">Save Config</button>
+              <button onclick="toggleServiceLanInternet('on')">Enable Internet</button>
+              <button class="secondary" onclick="toggleServiceLanInternet('off')">Disable Internet</button>
+            </div>
+          `;
+
+          document.getElementById('main-lan').innerHTML = `
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Profile</div><div class="value">${lanProfile.name}</div></div>
+              <div class="metric"><div class="label">Role</div><div class="value">${lanProfile.role}</div></div>
+              <div class="metric"><div class="label">Target</div><div class="value">${lanProfile.target_interface}</div></div>
+              <div class="metric"><div class="label">State</div><div class="value">${lanProfile.target_interface_status.state || '-'}</div></div>
+              <div class="metric"><div class="label">NetworkManager</div><div class="value">${lanProfile.target_interface_status.nm_state || 'not visible'}</div></div>
+              <div class="metric"><div class="label">Active Connection</div><div class="value">${lanProfile.target_interface_status.nm_connection || '-'}</div></div>
+              <div class="metric"><div class="label">Current IPv4</div><div class="value">${(lanProfile.target_interface_status.ipv4 || []).join(', ') || '-'}</div></div>
+              <div class="metric"><div class="label">Current IPv6</div><div class="value">${(lanProfile.target_interface_status.ipv6 || []).join(', ') || '-'}</div></div>
+              <div class="metric"><div class="label">Desired IPv4 Mode</div><div class="value">${lanProfile.ipv4_mode}</div></div>
+              <div class="metric"><div class="label">IPv4 Block</div><div class="value">${lanProfile.ipv4_subnet}</div></div>
+              <div class="metric"><div class="label">IPv4 Address</div><div class="value">${lanProfile.ipv4_address}</div></div>
+              <div class="metric"><div class="label">DHCP Range</div><div class="value">${lanProfile.dhcp_range}</div></div>
+              <div class="metric"><div class="label">IPv6 Mode</div><div class="value">${lanProfile.ipv6_mode}</div></div>
+              <div class="metric"><div class="label">IPv6 Address</div><div class="value">${lanProfile.ipv6_address}</div></div>
+              <div class="metric"><div class="label">IPv6 Prefix</div><div class="value">${lanProfile.ipv6_prefix}</div></div>
+              <div class="metric"><div class="label">DNS Servers</div><div class="value">${(lanProfile.dns_servers || []).join(', ') || '-'}</div></div>
+              <div class="metric"><div class="label">DNS Search</div><div class="value">${lanProfile.dns_search || '-'}</div></div>
+              <div class="metric"><div class="label">Internet</div><div class="value">${lanProfile.internet_enabled ? 'ON' : 'OFF'}</div></div>
+            </div>
+            <div class="pill">Editable Controls</div>
+            <div class="compact-grid" style="margin-top:8px;">
+              <div class="metric">
+                <div class="label">Target Interface</div>
+                <select id="main-lan-target-interface">
+                  ${interfaces.filter(i => i.physical && i.role === 'ethernet').map(i => `<option value="${i.name}" ${draftValue('main_lan.target_interface', lanProfile.target_interface) === i.name ? 'selected' : ''}>${i.name}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric">
+                <div class="label">Role</div>
+                <select id="main-lan-role">
+                  ${['multi-purpose', 'home-lab', 'service', 'isolated'].map(v => `<option value="${v}" ${draftValue('main_lan.role', lanProfile.role) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric">
+                <div class="label">IPv4 Mode</div>
+                <select id="main-lan-ipv4-mode">
+                  ${['shared', 'manual', 'disabled'].map(v => `<option value="${v}" ${draftValue('main_lan.ipv4_mode', lanProfile.ipv4_mode) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric"><div class="label">IPv4 Address</div><input id="main-lan-ipv4-address" value="${draftValue('main_lan.ipv4_address', lanProfile.ipv4_address || '')}" /></div>
+              <div class="metric"><div class="label">IPv4 Block</div><input id="main-lan-ipv4-subnet" value="${draftValue('main_lan.ipv4_subnet', lanProfile.ipv4_subnet || '')}" /></div>
+              <div class="metric"><div class="label">DHCP Range</div><input id="main-lan-dhcp-range" value="${draftValue('main_lan.dhcp_range', lanProfile.dhcp_range || '')}" /></div>
+              <div class="metric">
+                <div class="label">IPv6 Mode</div>
+                <select id="main-lan-ipv6-mode">
+                  ${['routed', 'manual', 'disabled'].map(v => `<option value="${v}" ${draftValue('main_lan.ipv6_mode', lanProfile.ipv6_mode) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric"><div class="label">IPv6 Address</div><input id="main-lan-ipv6-address" value="${draftValue('main_lan.ipv6_address', lanProfile.ipv6_address || '')}" /></div>
+              <div class="metric"><div class="label">IPv6 Prefix</div><input id="main-lan-ipv6-prefix" value="${draftValue('main_lan.ipv6_prefix', lanProfile.ipv6_prefix || '')}" /></div>
+              <div class="metric"><div class="label">DNS Servers</div><input id="main-lan-dns-servers" value="${draftValue('main_lan.dns_servers', (lanProfile.dns_servers || []).join(', '))}" /></div>
+              <div class="metric"><div class="label">DNS Search</div><input id="main-lan-dns-search" value="${draftValue('main_lan.dns_search', lanProfile.dns_search || '')}" /></div>
+            </div>
+            <div class="controls">
+              <button onclick="saveMainLanConfig()">Save Config</button>
+              <button onclick="applyMainLan()">Apply Main LAN</button>
+              <button onclick="restartMainLan()">Restart Connection</button>
+              <button onclick="toggleMainLanInternet('on')">Enable Internet</button>
+              <button class="secondary" onclick="toggleMainLanInternet('off')">Disable Internet</button>
+            </div>
+            <div class="hint">Shared mode needs host-compatible NetworkManager for full DHCP automation. Static fallback can still assign the LAN IP to the port.</div>
+          `;
+
+          document.getElementById('wifi-panel').innerHTML = `
+            <div class="compact-grid">
+              <div class="metric"><div class="label">Interface</div><div class="value">${wifi.interface}</div></div>
+              <div class="metric"><div class="label">State</div><div class="value">${wifi.device.state || '-'}</div></div>
+              <div class="metric"><div class="label">NetworkManager</div><div class="value">${wifi.device.nm_state || '-'}</div></div>
+              <div class="metric"><div class="label">Current IPv4</div><div class="value">${(wifi.device.ipv4 || []).join(', ') || '-'}</div></div>
+              <div class="metric"><div class="label">Current IPv6</div><div class="value">${(wifi.device.ipv6 || []).join(', ') || '-'}</div></div>
+            </div>
+            <div class="pill">Wi-Fi Controls</div>
+            <div class="compact-grid" style="margin-top:8px;">
+              <div class="metric">
+                <div class="label">Interface</div>
+                <select id="wifi-interface">
+                  ${interfaces.filter(i => i.role === 'wifi').map(i => `<option value="${i.name}" ${draftValue('wifi.interface', wifi.interface) === i.name ? 'selected' : ''}>${i.name}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric">
+                <div class="label">Mode</div>
+                <select id="wifi-mode">
+                  ${['client', 'hotspot'].map(v => `<option value="${v}" ${draftValue('wifi.mode', wifi.config.mode) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric"><div class="label">Client SSID</div><input id="wifi-ssid" value="${draftValue('wifi.ssid', wifi.config.ssid || '')}" /></div>
+              <div class="metric"><div class="label">Client Password</div><input id="wifi-password" type="password" value="${draftValue('wifi.password', wifi.config.password || '')}" /></div>
+              <div class="metric"><div class="label">Hotspot SSID</div><input id="wifi-hotspot-ssid" value="${draftValue('wifi.hotspot_ssid', wifi.config.hotspot_ssid || '')}" /></div>
+              <div class="metric"><div class="label">Hotspot Password</div><input id="wifi-hotspot-password" type="password" value="${draftValue('wifi.hotspot_password', wifi.config.hotspot_password || '')}" /></div>
+              <div class="metric">
+                <div class="label">IPv4 Method</div>
+                <select id="wifi-ipv4-method">
+                  ${['auto', 'manual', 'shared'].map(v => `<option value="${v}" ${draftValue('wifi.ipv4_method', wifi.config.ipv4_method) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric"><div class="label">IPv4 Address</div><input id="wifi-ipv4-address" value="${draftValue('wifi.ipv4_address', wifi.config.ipv4_address || '')}" /></div>
+              <div class="metric">
+                <div class="label">IPv6 Method</div>
+                <select id="wifi-ipv6-method">
+                  ${['auto', 'manual', 'disabled'].map(v => `<option value="${v}" ${draftValue('wifi.ipv6_method', wifi.config.ipv6_method) === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="metric"><div class="label">IPv6 Address</div><input id="wifi-ipv6-address" value="${draftValue('wifi.ipv6_address', wifi.config.ipv6_address || '')}" /></div>
+            </div>
+            <div class="controls">
+              <button onclick="saveWifiConfig()">Save Wi-Fi Config</button>
+              <button onclick="applyWifi()">Apply Wi-Fi</button>
+              <button class="secondary" onclick="render()">Rescan</button>
+            </div>
+            <div class="route">
+              <div class="label">Visible Wi-Fi Networks</div>
+              <div>${(wifi.scan || []).length ? wifi.scan.map(n => `${n.in_use ? '[*]' : '[ ]'} ${n.ssid} (${n.signal}%, ${n.security || 'open'})`).join('<br>') : 'No scan results'}</div>
+            </div>
+            <div class="route">
+              <div class="label">RFKill</div>
+              <div>${(wifi.rfkill || []).length ? wifi.rfkill.map(r => `${r.name || r.type}: soft=${r.soft} hard=${r.hard}`).join('<br>') : 'No rfkill entries'}</div>
+            </div>
+            <div class="hint">${(wifi.notes || []).join(' ')}</div>
           `;
 
           document.getElementById('interfaces').innerHTML = `
@@ -417,7 +2421,14 @@ def home():
                   <div><span class="label">MAC:</span> ${i.mac || '-'}</div>
                   <div><span class="label">IPv4:</span> ${(i.ipv4 || []).join(', ') || '-'}</div>
                   <div><span class="label">IPv6:</span> ${(i.ipv6 || []).join(', ') || '-'}</div>
+                  <div><span class="label">Role:</span> ${i.role || '-'}</div>
                   <div><span class="label">MTU:</span> ${i.mtu}</div>
+                  ${i.physical ? `
+                    <div class="controls">
+                      <button onclick="setLinkState('${i.name}', 'up')">Link Up</button>
+                      <button class="secondary" onclick="setLinkState('${i.name}', 'down')">Link Down</button>
+                    </div>
+                  ` : ''}
                 </div>
               `).join('')}
             </div>
@@ -429,6 +2440,8 @@ def home():
                 ${serviceLanClients.map(c => `
                   <div class="card">
                     <div><span class="label">IP:</span> <span class="value">${c.ip}</span></div>
+                    <div><span class="label">Interface:</span> ${c.interface || '-'}</div>
+                    <div><span class="label">Family:</span> ${c.family || '-'}</div>
                     <div><span class="label">MAC:</span> ${c.mac || '-'}</div>
                     <div><span class="label">Hostname:</span> ${c.hostname || '-'}</div>
                     <div><span class="label">State:</span> ${c.state || '-'}</div>
@@ -437,6 +2450,54 @@ def home():
               </div>
             `
             : '<div class="label">No clients detected</div>';
+
+          document.getElementById('active-sessions').innerHTML = activeSessions.length
+            ? `
+              <div class="grid">
+                ${activeSessions.map(s => `
+                  <div class="card">
+                    <div><span class="label">Service:</span> <span class="value">${s.service}</span></div>
+                    <div><span class="label">Interface:</span> ${s.interface || '-'}</div>
+                    <div><span class="label">Family:</span> ${s.family || '-'}</div>
+                    <div><span class="label">Local:</span> ${s.local_address}:${s.local_port}</div>
+                    <div><span class="label">Peer:</span> ${s.peer_address}:${s.peer_port}</div>
+                  </div>
+                `).join('')}
+              </div>
+            `
+            : '<div class="label">No active sessions detected</div>';
+
+          [
+            ['main-lan-target-interface', 'main_lan.target_interface'],
+            ['main-lan-role', 'main_lan.role'],
+            ['main-lan-ipv4-mode', 'main_lan.ipv4_mode'],
+            ['main-lan-ipv4-address', 'main_lan.ipv4_address'],
+            ['main-lan-ipv4-subnet', 'main_lan.ipv4_subnet'],
+            ['main-lan-dhcp-range', 'main_lan.dhcp_range'],
+            ['main-lan-ipv6-mode', 'main_lan.ipv6_mode'],
+            ['main-lan-ipv6-address', 'main_lan.ipv6_address'],
+            ['main-lan-ipv6-prefix', 'main_lan.ipv6_prefix'],
+            ['main-lan-dns-servers', 'main_lan.dns_servers'],
+            ['main-lan-dns-search', 'main_lan.dns_search'],
+            ['service-lan-interface', 'service_lan.interface'],
+            ['service-lan-ipv4-gateway', 'service_lan.ipv4_gateway'],
+            ['service-lan-ipv4-subnet', 'service_lan.ipv4_subnet'],
+            ['service-lan-dhcp-range', 'service_lan.dhcp_range'],
+            ['service-lan-ipv6-gateway', 'service_lan.ipv6_gateway'],
+            ['service-lan-ipv6-prefix', 'service_lan.ipv6_prefix'],
+            ['service-lan-enable-ipv4', 'service_lan.enable_ipv4'],
+            ['service-lan-enable-ipv6', 'service_lan.enable_ipv6'],
+            ['wifi-interface', 'wifi.interface'],
+            ['wifi-mode', 'wifi.mode'],
+            ['wifi-ssid', 'wifi.ssid'],
+            ['wifi-password', 'wifi.password'],
+            ['wifi-hotspot-ssid', 'wifi.hotspot_ssid'],
+            ['wifi-hotspot-password', 'wifi.hotspot_password'],
+            ['wifi-ipv4-method', 'wifi.ipv4_method'],
+            ['wifi-ipv4-address', 'wifi.ipv4_address'],
+            ['wifi-ipv6-method', 'wifi.ipv6_method'],
+            ['wifi-ipv6-address', 'wifi.ipv6_address'],
+          ].forEach(([id, key]) => bindDraft(id, key));
         }
 
         render();

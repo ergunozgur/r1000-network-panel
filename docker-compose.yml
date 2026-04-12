@@ -9,10 +9,29 @@ services:
       - apparmor:unconfined
     cap_add:
       - NET_ADMIN
+    environment:
+      LAN_PROFILE_NAME: Home Lab LAN
+      LAN_TARGET_INTERFACE: eth0
+      LAN_ROLE: multi-purpose
+      LAN_IPV4_MODE: shared
+      LAN_IPV4_ADDRESS: 10.0.0.1/24
+      LAN_IPV4_SUBNET: 10.0.0.0/24
+      LAN_DHCP_RANGE: 10.0.0.100-10.0.0.199
+      LAN_IPV6_MODE: routed
+      LAN_IPV6_ADDRESS: fd42:100::1/64
+      LAN_IPV6_PREFIX: fd42:100::/64
+      LAN_DNS_SERVERS: 1.1.1.1,8.8.8.8
+      LAN_DNS_SEARCH: home.lab
+      SERVICE_LAN_IPV4_GATEWAY: 192.168.10.1
+      SERVICE_LAN_IPV4_SUBNET: 192.168.10.0/24
+      SERVICE_LAN_DHCP_RANGE: 192.168.10.100-192.168.10.199
+      SERVICE_LAN_IPV6_GATEWAY: fd42:10::1
+      SERVICE_LAN_IPV6_PREFIX: fd42:10::/64
+      SERVICE_LAN_ENABLE_IPV4: "true"
+      SERVICE_LAN_ENABLE_IPV6: "true"
     volumes:
       - /etc/hostname:/host/etc/hostname:ro
+      - /etc/NetworkManager/dnsmasq-shared.d:/etc/NetworkManager/dnsmasq-shared.d
       - /proc/uptime:/host/proc/uptime:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       - /var/lib/misc:/host/var/lib/misc:ro
-      - /usr/local/bin/service-lan-inet-on.sh:/usr/local/bin/service-lan-inet-on.sh:ro
-      - /usr/local/bin/service-lan-inet-off.sh:/usr/local/bin/service-lan-inet-off.sh:ro
