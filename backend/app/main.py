@@ -12,10 +12,14 @@ import urllib.error
 
 app = FastAPI(title="R1000 Network Panel")
 SERVICE_LAN_DNSMASQ_IPV6_CONF = "/etc/NetworkManager/dnsmasq-shared.d/99-service-lan-ipv6.conf"
+PIHOLE_DNSMASQ_FORWARD_CONF = "/etc/NetworkManager/dnsmasq-shared.d/98-pihole-upstream.conf"
 HOST_SAMBA_CONFIG_PATHS = [
     "/host/etc/samba/smb.conf",
     "/etc/samba/smb.conf",
 ]
+HOST_SAMBA_MAIN_CONFIG = "/host/etc/samba/smb.conf"
+HOST_SAMBA_PORTAL_CONFIG = "/host/etc/samba/portal-shares.conf"
+HOST_SAMBA_INCLUDE_LINE = "include = /etc/samba/portal-shares.conf"
 RUNTIME_CONFIG_PATH = "/app/data/runtime-config.json"
 LTE_APN_PROFILES = [
     {
@@ -121,6 +125,7 @@ LAN_IPV6_ADDRESS = os.getenv("LAN_IPV6_ADDRESS", "fd42:100::1/64")
 LAN_IPV6_PREFIX = os.getenv("LAN_IPV6_PREFIX", "fd42:100::/64")
 LAN_DNS_SERVERS = os.getenv("LAN_DNS_SERVERS", "1.1.1.1,8.8.8.8")
 LAN_DNS_SEARCH = os.getenv("LAN_DNS_SEARCH", "home.lab")
+LAN_ROLE_OPTIONS = ["isolated", "internal", "external"]
 MAIN_LAN_CONFIG = {
     "name": "Main LAN",
     "target_interface": LAN_TARGET_INTERFACE,
@@ -200,9 +205,11 @@ def load_runtime_config() -> None:
     for key, value in data.get("main_lan", {}).items():
         if key in MAIN_LAN_CONFIG and isinstance(value, str):
             MAIN_LAN_CONFIG[key] = value.strip()
+    MAIN_LAN_CONFIG["role"] = normalize_lan_role(MAIN_LAN_CONFIG.get("role", "internal"))
     for key, value in data.get("service_lan", {}).items():
         if key in SERVICE_LAN_CONFIG and isinstance(value, str):
             SERVICE_LAN_CONFIG[key] = value.strip()
+    SERVICE_LAN_CONFIG["role"] = normalize_lan_role(SERVICE_LAN_CONFIG.get("role", "isolated"))
     for key, value in data.get("wifi", {}).items():
         if key in WIFI_CONFIG and key not in WIFI_SECRET_KEYS and isinstance(value, str):
             WIFI_CONFIG[key] = value.strip()
@@ -269,6 +276,30 @@ def host_nmcli_available() -> bool:
     return Path("/host/usr/bin/nmcli").exists()
 
 
+def nmcli_command(args: list[str]) -> list[str]:
+    return host_nmcli_command(args) if host_nmcli_available() else ["nmcli"] + args
+
+
+def nmcli_available() -> bool:
+    return host_nmcli_available() or command_exists("nmcli")
+
+
+def run_nmcli(args: list[str]) -> str:
+    return run_command(nmcli_command(args))
+
+
+def run_nmcli_full(args: list[str]) -> tuple[int, str, str]:
+    return run_command_full(nmcli_command(args))
+
+
+def host_command_available(path: str) -> bool:
+    return Path("/host").joinpath(path.lstrip("/")).exists()
+
+
+def host_binary_command(path: str, args: list[str]) -> list[str]:
+    return ["chroot", "/host", path] + args
+
+
 def command_exists(name: str) -> bool:
     result = subprocess.run(["which", name], capture_output=True, text=True)
     return result.returncode == 0
@@ -292,6 +323,112 @@ def wifi_cfg(key: str) -> str:
 
 def same_physical_lan_interface(main_interface: str, service_interface: str) -> bool:
     return bool(main_interface and service_interface and main_interface == service_interface)
+
+
+def normalize_lan_role(value: str) -> str:
+    role = (value or "").strip().lower()
+    mapping = {
+        "multi-purpose": "internal",
+        "home-lab": "internal",
+        "service": "external",
+        "isolated": "isolated",
+        "internal": "internal",
+        "external": "external",
+    }
+    return mapping.get(role, "internal")
+
+
+def role_description(role: str) -> str:
+    normalized = normalize_lan_role(role)
+    if normalized == "isolated":
+        return "internet only for clients, no internal LAN access"
+    if normalized == "external":
+        return "internet-facing client zone, kept away from internal LAN but still reachable from Tailscale on the router"
+    return "trusted internal LAN with access to local services and management"
+
+
+def read_millicelsius(path: str) -> float | None:
+    raw = read_text(path, "")
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return round(value / 1000.0, 1)
+
+
+def fetch_node_exporter_metrics() -> str:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:9100/metrics", timeout=1.5) as response:
+            return response.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def metric_value(metrics_text: str, pattern: str) -> float | None:
+    match = re.search(pattern, metrics_text, re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return round(float(match.group(1)), 1)
+    except ValueError:
+        return None
+
+
+def get_cpu_temperature_c() -> float | None:
+    metrics = fetch_node_exporter_metrics()
+    value = metric_value(
+        metrics,
+        r'^node_hwmon_temp_celsius\{[^}]*chip="thermal_thermal_zone0"[^}]*\}\s+([0-9.]+)$',
+    )
+    if value is not None:
+        return value
+    base = Path("/sys/class/thermal")
+    if not base.exists():
+        return None
+    for zone in sorted(base.glob("thermal_zone*")):
+        zone_type = read_text(str(zone / "type"), "").lower()
+        if "cpu" in zone_type:
+            value = read_millicelsius(str(zone / "temp"))
+            if value is not None:
+                return value
+    for zone in sorted(base.glob("thermal_zone*")):
+        value = read_millicelsius(str(zone / "temp"))
+        if value is not None:
+            return value
+    return None
+
+
+def get_nvme_temperature_c() -> float | None:
+    metrics = fetch_node_exporter_metrics()
+    value = metric_value(
+        metrics,
+        r'^node_hwmon_temp_celsius\{[^}]*chip="nvme_nvme0"[^}]*\}\s+([0-9.]+)$',
+    )
+    if value is not None:
+        return value
+    value = metric_value(metrics, r'^edge_nvme_temp_c\s+([0-9.]+)$')
+    if value is not None:
+        return value
+    candidates = list(Path("/sys/class/nvme").glob("nvme*/device/hwmon/hwmon*/temp1_input"))
+    for candidate in candidates:
+        value = read_millicelsius(str(candidate))
+        if value is not None:
+            return value
+    return None
+
+
+def get_input_voltage_v() -> float | None:
+    for candidate in Path("/sys/class/power_supply").glob("*/voltage_now"):
+        raw = read_text(str(candidate), "")
+        if not raw:
+            continue
+        try:
+            return round(int(raw) / 1_000_000.0, 2)
+        except ValueError:
+            continue
+    return None
 
 
 load_runtime_config()
@@ -346,7 +483,7 @@ def get_sim_imsi(modem_id: str) -> str:
 
 
 def get_active_cellular_connection() -> str:
-    output = run_command(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
+    output = run_nmcli(["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
     if not output:
         return ""
     for line in output.splitlines():
@@ -391,31 +528,19 @@ def ensure_auto_apn() -> None:
     conn = get_active_cellular_connection()
     if not conn:
         return
-    current_apn = run_command(["nmcli", "-g", "gsm.apn", "connection", "show", conn])
-    current_v4 = run_command(["nmcli", "-g", "ipv4.method", "connection", "show", conn])
-    current_v6 = run_command(["nmcli", "-g", "ipv6.method", "connection", "show", conn])
+    current_apn = run_nmcli(["-g", "gsm.apn", "connection", "show", conn])
+    current_v4 = run_nmcli(["-g", "ipv4.method", "connection", "show", conn])
+    current_v6 = run_nmcli(["-g", "ipv6.method", "connection", "show", conn])
     if current_apn == profile["apn"] and current_v4 == profile["ipv4_method"] and current_v6 == profile["ipv6_method"]:
         return
-    run_command_full(
-        ["nmcli", "connection", "modify", conn, "gsm.apn", profile["apn"], "ipv4.method", profile["ipv4_method"], "ipv6.method", profile["ipv6_method"]]
-    )
-    run_command_full(["nmcli", "connection", "down", conn])
-    run_command_full(["nmcli", "connection", "up", conn])
+    run_nmcli_full(["connection", "modify", conn, "gsm.apn", profile["apn"], "ipv4.method", profile["ipv4_method"], "ipv6.method", profile["ipv6_method"]])
+    run_nmcli_full(["connection", "down", conn])
+    run_nmcli_full(["connection", "up", conn])
     LTE_AUTO_APN["last_key"] = key
     LTE_AUTO_APN["last_applied"] = now
 
 
-def get_samba_status() -> dict[str, object]:
-    smbd = is_process_running("smbd")
-    nmbd = is_process_running("nmbd")
-    conf_path = ""
-    conf_text = ""
-    for candidate in HOST_SAMBA_CONFIG_PATHS:
-        conf_text = read_text(candidate, "")
-        if conf_text:
-            conf_path = candidate
-            break
-
+def parse_samba_shares(conf_text: str, source: str) -> list[dict[str, str]]:
     shares: list[dict[str, str]] = []
     current_name = ""
     current_share: dict[str, str] | None = None
@@ -433,6 +558,7 @@ def get_samba_status() -> dict[str, object]:
                 "read_only": "",
                 "guest_ok": "",
                 "valid_users": "",
+                "source": source,
             }
             continue
         if "=" not in line or not current_share:
@@ -450,12 +576,125 @@ def get_samba_status() -> dict[str, object]:
 
     if current_share and current_name and current_name.lower() != "global":
         shares.append(current_share)
+    return shares
+
+
+def ensure_samba_portal_include() -> None:
+    main_path = Path(HOST_SAMBA_MAIN_CONFIG)
+    if not main_path.exists():
+        raise HTTPException(status_code=500, detail="Host Samba config not found")
+    text = main_path.read_text()
+    if HOST_SAMBA_INCLUDE_LINE in text:
+        return
+    lines = text.splitlines()
+    inserted = False
+    for index, line in enumerate(lines):
+        if line.strip().lower() == "[global]":
+            insert_at = index + 1
+            while insert_at < len(lines) and lines[insert_at].startswith(("\t", " ")):
+                insert_at += 1
+            lines.insert(insert_at, f"\t{HOST_SAMBA_INCLUDE_LINE}")
+            inserted = True
+            break
+    if not inserted:
+        lines.extend(["", "[global]", f"\t{HOST_SAMBA_INCLUDE_LINE}"])
+    main_path.write_text("\n".join(lines).rstrip() + "\n")
+
+
+def read_portal_samba_shares() -> list[dict[str, str]]:
+    return parse_samba_shares(read_text(HOST_SAMBA_PORTAL_CONFIG, ""), "portal")
+
+
+def write_portal_samba_shares(shares: list[dict[str, str]]) -> None:
+    lines = ["# Managed by Network Panel", ""]
+    for share in shares:
+        lines.append(f"[{share['name']}]")
+        lines.append(f"\tpath = {share['path']}")
+        lines.append(f"\tread only = {share['read_only'] or 'No'}")
+        lines.append(f"\tguest ok = {share['guest_ok'] or 'No'}")
+        if share.get("valid_users"):
+            lines.append(f"\tvalid users = {share['valid_users']}")
+        lines.append("")
+    Path(HOST_SAMBA_PORTAL_CONFIG).write_text("\n".join(lines).rstrip() + "\n")
+
+
+def test_samba_config() -> None:
+    code, stdout, stderr = run_command_full(["testparm", "-s", HOST_SAMBA_MAIN_CONFIG])
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr or "Samba config validation failed"})
+
+
+def get_samba_users() -> list[dict[str, str]]:
+    if not host_command_available("/usr/bin/pdbedit"):
+        return []
+    code, stdout, _ = run_command_full(host_binary_command("/usr/bin/pdbedit", ["-L"]))
+    if code != 0:
+        return []
+    users: list[dict[str, str]] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        username, _, description = line.partition(":")
+        users.append(
+            {
+                "username": username.strip(),
+                "description": description.strip(),
+            }
+        )
+    return users
+
+
+def get_printing_status() -> dict[str, object]:
+    listeners = parse_service_listeners()
+    cups_listener = any("631" in (svc.get("ports") or []) for svc in listeners)
+    samba = get_samba_status()
+    printer_shares = [share for share in samba.get("shares", []) if share.get("name", "").lower() in {"printers", "print$"}]
+    cups_installed = host_command_available("/usr/bin/systemctl")
+    cups_enabled = False
+    cups_active = is_process_running("cupsd")
+    if cups_installed:
+        _, enabled_out, enabled_err = run_command_full(host_binary_command("/usr/bin/systemctl", ["is-enabled", "cups"]))
+        _, active_out, active_err = run_command_full(host_binary_command("/usr/bin/systemctl", ["is-active", "cups"]))
+        if "not-found" in (enabled_out + enabled_err + active_out + active_err):
+            cups_installed = False
+        else:
+            cups_enabled = enabled_out.strip() == "enabled"
+            cups_active = active_out.strip() == "active" or cups_active
+    return {
+        "cups_installed": cups_installed,
+        "cups_enabled": cups_enabled,
+        "cups_active": cups_active,
+        "cups_listener": cups_listener,
+        "printer_shares": printer_shares,
+    }
+
+
+def get_samba_status() -> dict[str, object]:
+    smbd = is_process_running("smbd")
+    nmbd = is_process_running("nmbd")
+    conf_path = ""
+    conf_text = ""
+    for candidate in HOST_SAMBA_CONFIG_PATHS:
+        conf_text = read_text(candidate, "")
+        if conf_text:
+            conf_path = candidate
+            break
+
+    shares = parse_samba_shares(conf_text, "main")
+    portal_shares = read_portal_samba_shares()
+    combined_shares = shares + [
+        share for share in portal_shares
+        if all(existing["name"].lower() != share["name"].lower() for existing in shares)
+    ]
 
     return {
         "running": smbd,
         "nmbd_running": nmbd,
         "config_path": conf_path or "not found",
-        "shares": shares,
+        "shares": combined_shares,
+        "portal_shares": portal_shares,
+        "users": get_samba_users(),
+        "host_config_writable": Path("/host/etc/samba").exists() and os.access("/host/etc/samba", os.W_OK),
         "smbpasswd_available": command_exists("smbpasswd"),
     }
 
@@ -520,9 +759,9 @@ def detect_shared_interfaces(ruleset: str) -> list[str]:
 
 
 def get_service_lan_interface(ruleset: str = "") -> str:
-    configured = service_lan_cfg("interface")
-    if configured:
-        return configured
+    _, resolved = resolve_lan_interfaces()
+    if resolved:
+        return resolved
 
     if not ruleset:
         ruleset = run_command(["nft", "list", "ruleset"])
@@ -635,6 +874,84 @@ def local_http_probe(url: str, timeout: float = 3.0) -> dict[str, object]:
         return {"ok": False, "code": 0, "url": url, "error": str(exc)}
 
 
+def get_pihole_container_ip() -> str:
+    docker_cmd = None
+    if host_command_available("/usr/bin/docker"):
+        docker_cmd = host_binary_command(
+            "/usr/bin/docker",
+            [
+                "inspect",
+                "-f",
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                "pihole",
+            ],
+        )
+    elif command_exists("docker"):
+        docker_cmd = [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            "pihole",
+        ]
+    if not docker_cmd:
+        return ""
+    code, stdout, stderr = run_command_full(docker_cmd)
+    if code != 0:
+        return ""
+    candidate = stdout.strip()
+    if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", candidate):
+        return candidate
+    return ""
+
+
+def pihole_forwarding_enabled() -> bool:
+    config = read_text(PIHOLE_DNSMASQ_FORWARD_CONF, "")
+    ip = get_pihole_container_ip()
+    if not config or not ip:
+        return False
+    return f"server={ip}" in config
+
+
+def configure_pihole_dns_forwarding() -> tuple[int, str, str]:
+    pihole_ip = get_pihole_container_ip()
+    if not pihole_ip:
+        return 1, "", "Pi-hole container IP not found"
+
+    contents = (
+        "# Managed by network-panel\n"
+        "# Forward shared dnsmasq queries into Pi-hole so FTL sees and blocks LAN traffic.\n"
+        "no-resolv\n"
+        "cache-size=0\n"
+        f"server={pihole_ip}\n"
+    )
+    try:
+        Path(PIHOLE_DNSMASQ_FORWARD_CONF).write_text(contents)
+    except Exception as exc:
+        return 1, "", f"Failed to write {PIHOLE_DNSMASQ_FORWARD_CONF}: {exc}"
+
+    outputs = []
+    errors = []
+    for connection in ("main-lan", "portal-hotspot"):
+        code, stdout, stderr = run_nmcli_full(["connection", "show", connection])
+        if code != 0:
+            continue
+        down_code, down_stdout, down_stderr = run_nmcli_full(["connection", "down", connection])
+        up_code, up_stdout, up_stderr = run_nmcli_full(["connection", "up", connection])
+        if down_stdout:
+            outputs.append(down_stdout)
+        if up_stdout:
+            outputs.append(up_stdout)
+        if down_stderr:
+            errors.append(down_stderr)
+        if up_stderr:
+            errors.append(up_stderr)
+        if up_code != 0:
+            return up_code, "\n".join(outputs).strip(), "\n".join(errors).strip()
+
+    return 0, "\n".join(outputs).strip(), "\n".join(errors).strip()
+
+
 def get_pihole_status() -> dict[str, object]:
     listeners = parse_service_listeners()
     services_by_name = {service["name"]: service for service in listeners}
@@ -646,6 +963,19 @@ def get_pihole_status() -> dict[str, object]:
         bind for bind in dns_listener.get("binds", [])
         if bind not in {"127.0.0.53%lo", "127.0.0.54", "::1"}
     ]
+    main_ipv4 = get_main_lan_ipv4()
+    service_ipv4 = service_lan_cfg("ipv4_gateway")
+    wifi_ipv4 = get_wifi_status().get("device", {}).get("ipv4", [])
+    wifi_bind = wifi_ipv4[0] if wifi_ipv4 else ""
+    active_networks = []
+    if main_ipv4 and main_ipv4 in dns_binds:
+        active_networks.append("Main LAN")
+    if service_ipv4 and service_ipv4 in dns_binds:
+        active_networks.append("Service LAN")
+    if wifi_bind and wifi_bind in dns_binds:
+        active_networks.append("Wi-Fi Hotspot")
+    pihole_ip = get_pihole_container_ip()
+    forwarding_enabled = pihole_forwarding_enabled()
     return {
         "active": bool(pihole_listener) or admin_probe["ok"],
         "web_port": "8081",
@@ -655,10 +985,42 @@ def get_pihole_status() -> dict[str, object]:
         "root_status_code": root_probe.get("code", 0),
         "dns_listener_detected": bool(dns_listener),
         "dns_binds": dns_binds,
+        "container_ip": pihole_ip,
+        "dns_forwarding_enabled": forwarding_enabled,
+        "active_networks": active_networks,
         "notes": [
-            "Pi-hole is currently checked in read-only mode from the portal",
-            "No DNS routing was changed automatically in this step",
+            "Main LAN and Wi-Fi hotspot clients use the local gateway as DNS in shared mode",
+            "Shared dnsmasq needs forwarding into Pi-hole for query statistics and blocking to appear in FTL",
         ],
+    }
+
+
+@app.post("/api/pihole/activate")
+def pihole_activate():
+    status = get_pihole_status()
+    if not status.get("active") or not status.get("dns_listener_detected"):
+        raise HTTPException(status_code=500, detail="Pi-hole DNS is not ready")
+    code, stdout, stderr = configure_pihole_dns_forwarding()
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": stdout, "stderr": stderr or "Failed to forward shared DNS into Pi-hole"},
+        )
+    main_ipv4 = get_main_lan_ipv4()
+    if main_ipv4:
+        MAIN_LAN_CONFIG["dns_servers"] = main_ipv4
+    service_ipv4 = service_lan_cfg("ipv4_gateway")
+    if service_ipv4:
+        SERVICE_LAN_CONFIG["dns_servers"] = service_ipv4
+    save_runtime_config()
+    return {
+        "ok": True,
+        "main_lan_dns": MAIN_LAN_CONFIG.get("dns_servers", ""),
+        "service_lan_dns": SERVICE_LAN_CONFIG.get("dns_servers", ""),
+        "pihole_forwarding_enabled": pihole_forwarding_enabled(),
+        "stdout": stdout,
+        "stderr": stderr,
+        "active_networks": status.get("active_networks", []),
     }
 
 
@@ -761,11 +1123,17 @@ def get_interface_data(name: str) -> dict[str, object]:
     }
 
 
+def get_main_lan_ipv4() -> str:
+    iface = get_interface_data(get_main_lan_interface())
+    ipv4 = iface.get("ipv4", [])
+    return ipv4[0] if ipv4 else ""
+
+
 def get_nmcli_device_status(interface: str) -> dict[str, str]:
-    if not command_exists("nmcli"):
+    if not nmcli_available():
         return {}
 
-    output = run_command(["nmcli", "-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,GENERAL.TYPE", "device", "show", interface])
+    output = run_nmcli(["-t", "-f", "GENERAL.STATE,GENERAL.CONNECTION,GENERAL.TYPE", "device", "show", interface])
     if not output:
         return {}
 
@@ -783,7 +1151,7 @@ def get_nmcli_device_status(interface: str) -> dict[str, str]:
 
 
 def get_nmcli_connection_status(connection_name: str) -> dict[str, str]:
-    if not command_exists("nmcli"):
+    if not nmcli_available():
         return {}
 
     fields = [
@@ -797,7 +1165,7 @@ def get_nmcli_connection_status(connection_name: str) -> dict[str, str]:
         "ipv6.addresses",
         "ipv6.dns",
     ]
-    output = run_command(["nmcli", "-g", ",".join(fields), "connection", "show", connection_name])
+    output = run_nmcli(["-g", ",".join(fields), "connection", "show", connection_name])
     if not output:
         return {}
 
@@ -809,7 +1177,7 @@ def get_nmcli_connection_status(connection_name: str) -> dict[str, str]:
 
 
 def get_wifi_radio_state() -> dict[str, str]:
-    output = run_command(["nmcli", "radio", "wifi"])
+    output = run_nmcli(["radio", "wifi"])
     enabled = output.strip().lower() == "enabled"
     return {"wifi_radio": output.strip() or "unknown", "wifi_radio_enabled": "true" if enabled else "false"}
 
@@ -844,7 +1212,7 @@ def get_wifi_active_connection(interface: str) -> dict[str, str]:
         "ipv6.method",
         "ipv6.addresses",
     ]
-    output = run_command(["nmcli", "-g", ",".join(fields), "connection", "show", connection])
+    output = run_nmcli(["-g", ",".join(fields), "connection", "show", connection])
     if not output:
         return {"connection": connection}
 
@@ -898,7 +1266,7 @@ def get_physical_interfaces() -> list[dict[str, object]]:
 
 def get_lan_interfaces() -> list[dict[str, object]]:
     result = []
-    target_name = lan_cfg("target_interface")
+    target_name = get_main_lan_interface()
     service_name = get_service_lan_interface()
     for iface in get_interfaces_data():
         if iface["role"] != "ethernet":
@@ -906,6 +1274,67 @@ def get_lan_interfaces() -> list[dict[str, object]]:
         if iface["name"] in {target_name, service_name} or iface["state"] == "UP":
             result.append(iface)
     return result
+
+
+def ethernet_candidates() -> list[dict[str, object]]:
+    candidates = [iface for iface in get_interfaces_data() if iface["role"] == "ethernet" and iface["physical"]]
+    return sorted(
+        candidates,
+        key=lambda iface: (
+            0 if iface["name"].startswith("eth") else 1,
+            0 if iface["state"] == "UP" else 1,
+            0 if iface["name"].startswith("enx") else 1,
+            iface["name"],
+        ),
+    )
+
+
+def choose_interface(preferred: str, exclude: set[str], purpose: str) -> str:
+    candidates = ethernet_candidates()
+    candidate_names = {iface["name"] for iface in candidates}
+    if preferred and preferred in candidate_names and preferred not in exclude:
+        return preferred
+
+    if purpose == "service":
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda iface: (
+                0 if iface["name"].startswith("enx") else 1,
+                0 if iface["state"] == "UP" else 1,
+                iface["name"],
+            ),
+        )
+    else:
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda iface: (
+                0 if iface["name"].startswith("eth") else 1,
+                0 if iface["state"] == "UP" else 1,
+                iface["name"],
+            ),
+        )
+
+    for iface in sorted_candidates:
+        if iface["name"] not in exclude:
+            return iface["name"]
+    return preferred or (sorted_candidates[0]["name"] if sorted_candidates else "")
+
+
+def resolve_lan_interfaces() -> tuple[str, str]:
+    main_preferred = lan_cfg("target_interface")
+    service_preferred = service_lan_cfg("interface")
+    main_interface = choose_interface(main_preferred, set(), "main")
+    service_interface = choose_interface(service_preferred, {main_interface} if main_interface else set(), "service")
+    if main_interface == service_interface:
+        service_interface = choose_interface("", {main_interface} if main_interface else set(), "service")
+    if main_interface == service_interface:
+        main_interface = choose_interface("", {service_interface} if service_interface else set(), "main")
+    return main_interface, service_interface
+
+
+def get_main_lan_interface() -> str:
+    main_interface, _ = resolve_lan_interfaces()
+    return main_interface
 
 
 def interface_block_table_name(interface: str) -> str:
@@ -1055,7 +1484,7 @@ def get_wifi_clients() -> list[dict[str, str]]:
 
 
 def get_active_sessions() -> list[dict[str, str]]:
-    output = run_command(["ss", "-tn", "state", "established"])
+    output = run_command(["ss", "-H", "-tnp", "state", "established"])
     if not output:
         return []
 
@@ -1069,18 +1498,23 @@ def get_active_sessions() -> list[dict[str, str]]:
 
     port_names = known_port_names()
     sessions = []
-    for line in output.splitlines()[1:]:
+    for line in output.splitlines():
         parts = line.split()
-        if len(parts) < 5:
+        if len(parts) < 4:
             continue
-        local = parts[3]
-        peer = parts[4]
+        local = parts[2]
+        peer = parts[3]
+        process = " ".join(parts[4:]) if len(parts) > 4 else ""
         local_host, _, local_port = local.rpartition(":")
         peer_host, _, peer_port = peer.rpartition(":")
         local_host = local_host.strip("[]")
         peer_host = peer_host.strip("[]")
         if local_host.startswith("127.") or local_host == "::1":
             continue
+        entry = port_names.get(local_port, f"Port {local_port}")
+        if local_port not in port_names:
+            continue
+        process_match = re.search(r'"([^"]+)"', process)
         sessions.append(
             {
                 "interface": ip_to_interface.get(local_host, "unknown"),
@@ -1088,7 +1522,9 @@ def get_active_sessions() -> list[dict[str, str]]:
                 "local_port": local_port,
                 "peer_address": peer_host,
                 "peer_port": peer_port,
-                "service": port_names.get(local_port, f"Port {local_port}"),
+                "service": entry,
+                "entry": entry,
+                "process": process_match.group(1) if process_match else "",
                 "family": "ipv6" if ":" in local_host else "ipv4",
             }
         )
@@ -1096,14 +1532,14 @@ def get_active_sessions() -> list[dict[str, str]]:
 
 
 def get_wifi_scan(interface: str, force_rescan: bool = False) -> list[dict[str, str]]:
-    if not command_exists("nmcli"):
+    if not nmcli_available():
         return []
     if force_rescan:
-        run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+        run_nmcli_full(["device", "set", interface, "managed", "yes"])
         run_command_full(["ip", "link", "set", "dev", interface, "up"])
-        run_command_full(["nmcli", "radio", "wifi", "on"])
-        run_command_full(["nmcli", "dev", "wifi", "rescan", "ifname", interface])
-    output = run_command(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE", "dev", "wifi", "list", "ifname", interface])
+        run_nmcli_full(["radio", "wifi", "on"])
+        run_nmcli_full(["dev", "wifi", "rescan", "ifname", interface])
+    output = run_nmcli(["-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE", "dev", "wifi", "list", "ifname", interface])
     networks = []
     for line in output.splitlines():
         parts = line.split(":")
@@ -1174,7 +1610,7 @@ def get_wifi_status() -> dict[str, object]:
 
 
 def set_nmcli_managed(interface: str) -> tuple[int, str, str]:
-    return run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+    return run_nmcli_full(["device", "set", interface, "managed", "yes"])
 
 
 def apply_wifi_mode() -> tuple[int, str, str]:
@@ -1267,7 +1703,8 @@ def set_wifi_power(state: str) -> tuple[int, str, str]:
 
 
 def configure_main_lan() -> tuple[int, str, str]:
-    interface = lan_cfg("target_interface")
+    interface = get_main_lan_interface()
+    nmcli_cmd = host_nmcli_command if host_nmcli_available() else (lambda args: ["nmcli"] + args)
 
     def apply_static_fallback(reason: str) -> tuple[int, str, str]:
         commands = [
@@ -1297,17 +1734,17 @@ def configure_main_lan() -> tuple[int, str, str]:
         stderr_parts.append("Applied static fallback. DHCP/shared automation still needs host-side NetworkManager compatibility.")
         return 0, "\n".join(stdout_parts), "\n".join(stderr_parts)
 
-    if not command_exists("nmcli"):
+    if not host_nmcli_available() and not command_exists("nmcli"):
         return apply_static_fallback("nmcli is not available in the backend container")
 
     connection_name = "main-lan"
     dns_servers = lan_cfg("dns_servers")
     dns_search = lan_cfg("dns_search")
 
-    run_command_full(["nmcli", "device", "set", interface, "managed", "yes"])
+    run_command_full(nmcli_cmd(["device", "set", interface, "managed", "yes"]))
 
-    existing = run_command(["nmcli", "-g", "connection.id", "connection", "show", connection_name])
-    base_cmd = ["nmcli", "connection", "modify" if existing else "add"]
+    existing = run_command(nmcli_cmd(["-g", "connection.id", "connection", "show", connection_name]))
+    base_cmd = nmcli_cmd(["connection", "modify" if existing else "add"])
     if existing:
         cmd = base_cmd + [connection_name]
     else:
@@ -1318,17 +1755,16 @@ def configure_main_lan() -> tuple[int, str, str]:
         "connection.interface-name", interface,
         "ipv4.method", lan_cfg("ipv4_mode"),
         "ipv4.addresses", lan_cfg("ipv4_address"),
-        "ipv4.dns", dns_servers,
-        "ipv4.dns-search", dns_search,
         "ipv6.method", "manual" if lan_cfg("ipv6_mode") != "disabled" else "disabled",
         "ipv6.addresses", lan_cfg("ipv6_address") if lan_cfg("ipv6_mode") != "disabled" else "",
-        "ipv6.dns", dns_servers,
     ]
+    if lan_cfg("ipv4_mode") != "shared":
+        settings.extend(["ipv4.dns", dns_servers, "ipv4.dns-search", dns_search])
     code, stdout, stderr = run_command_full(cmd + settings)
     if code != 0:
         return apply_static_fallback(stderr or "NetworkManager profile apply failed")
 
-    code, stdout, stderr = run_command_full(["nmcli", "connection", "up", connection_name])
+    code, stdout, stderr = run_command_full(nmcli_cmd(["connection", "up", connection_name]))
     if code != 0:
         return apply_static_fallback(stderr or "Failed to bring main-lan up")
     return code, stdout, stderr
@@ -1359,6 +1795,11 @@ def overview():
         iface for iface in interfaces_data
         if iface["role"] == "ethernet"
     ]
+    hardware = {
+        "cpu_temp_c": get_cpu_temperature_c(),
+        "nvme_temp_c": get_nvme_temperature_c(),
+        "input_voltage_v": get_input_voltage_v(),
+    }
 
     return {
         "hostname": hostname,
@@ -1369,6 +1810,7 @@ def overview():
         "uplink_ipv6": parse_default_route(default_v6),
         "uplinks": uplinks,
         "local_lans": local_lans,
+        "hardware": hardware,
     }
 
 
@@ -1418,9 +1860,9 @@ def lte_profile():
     if not conn:
         return {"available": False, "connection": ""}
 
-    apn = run_command(["nmcli", "-g", "gsm.apn", "connection", "show", conn])
-    ipv4_method = run_command(["nmcli", "-g", "ipv4.method", "connection", "show", conn])
-    ipv6_method = run_command(["nmcli", "-g", "ipv6.method", "connection", "show", conn])
+    apn = run_nmcli(["-g", "gsm.apn", "connection", "show", conn])
+    ipv4_method = run_nmcli(["-g", "ipv4.method", "connection", "show", conn])
+    ipv6_method = run_nmcli(["-g", "ipv6.method", "connection", "show", conn])
     return {
         "available": True,
         "connection": conn,
@@ -1492,9 +1934,7 @@ def lte_apn_apply(payload: dict = Body(...)):
     if not apn:
         raise HTTPException(status_code=400, detail="APN is required")
 
-    code, stdout, stderr = run_command_full(
-        ["nmcli", "connection", "modify", conn, "gsm.apn", apn, "ipv4.method", ipv4_method, "ipv6.method", ipv6_method]
-    )
+    code, stdout, stderr = run_nmcli_full(["connection", "modify", conn, "gsm.apn", apn, "ipv4.method", ipv4_method, "ipv6.method", ipv6_method])
     if code != 0:
         raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
 
@@ -1514,8 +1954,8 @@ def lte_apn_apply(payload: dict = Body(...)):
         del LTE_SIM_OVERRIDES[sim_key]
         save_runtime_config()
 
-    run_command_full(["nmcli", "connection", "down", conn])
-    code, stdout, stderr = run_command_full(["nmcli", "connection", "up", conn])
+    run_nmcli_full(["connection", "down", conn])
+    code, stdout, stderr = run_nmcli_full(["connection", "up", conn])
     if code != 0:
         raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
 
@@ -1584,12 +2024,99 @@ def samba_user_password(payload: dict = Body(...)):
     password = str(payload.get("password", "")).strip()
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password required")
-    if not command_exists("smbpasswd"):
-        raise HTTPException(status_code=500, detail="smbpasswd not available")
-    code, stdout, stderr = run_command_input(["smbpasswd", "-a", "-s", username], f"{password}\n{password}\n")
+    if not host_command_available("/usr/bin/smbpasswd"):
+        raise HTTPException(status_code=500, detail="Host smbpasswd not available")
+    code, stdout, stderr = run_command_input(host_binary_command("/usr/bin/smbpasswd", ["-L", "-a", "-s", username]), f"{password}\n{password}\n")
     if code != 0:
         raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
     return {"ok": True}
+
+
+@app.post("/api/samba/user/delete")
+def samba_user_delete(payload: dict = Body(...)):
+    username = str(payload.get("username", "")).strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username required")
+    if not host_command_available("/usr/bin/smbpasswd"):
+        raise HTTPException(status_code=500, detail="Host smbpasswd not available")
+    code, stdout, stderr = run_command_full(host_binary_command("/usr/bin/smbpasswd", ["-L", "-x", username]))
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+    return {"ok": True, "username": username}
+
+
+@app.post("/api/samba/user/state")
+def samba_user_state(payload: dict = Body(...)):
+    username = str(payload.get("username", "")).strip()
+    action = str(payload.get("action", "")).strip().lower()
+    if not username or action not in {"enable", "disable"}:
+        raise HTTPException(status_code=400, detail="Username and valid action required")
+    if not host_command_available("/usr/bin/smbpasswd"):
+        raise HTTPException(status_code=500, detail="Host smbpasswd not available")
+    flag = "-e" if action == "enable" else "-d"
+    code, stdout, stderr = run_command_full(host_binary_command("/usr/bin/smbpasswd", ["-L", flag, username]))
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+    return {"ok": True, "username": username, "action": action}
+
+
+@app.post("/api/samba/share")
+def samba_share_save(payload: dict = Body(...)):
+    name = str(payload.get("name", "")).strip()
+    path = str(payload.get("path", "")).strip()
+    read_only = str(payload.get("read_only", "No")).strip() or "No"
+    guest_ok = str(payload.get("guest_ok", "No")).strip() or "No"
+    valid_users = str(payload.get("valid_users", "")).strip()
+    if not name or not path:
+        raise HTTPException(status_code=400, detail="Share name and path are required")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise HTTPException(status_code=400, detail="Share name may only contain letters, numbers, dot, dash, and underscore")
+
+    ensure_samba_portal_include()
+    shares = read_portal_samba_shares()
+    updated = False
+    for share in shares:
+        if share["name"].lower() == name.lower():
+            share.update({"name": name, "path": path, "read_only": read_only, "guest_ok": guest_ok, "valid_users": valid_users, "source": "portal"})
+            updated = True
+            break
+    if not updated:
+        shares.append({"name": name, "path": path, "read_only": read_only, "guest_ok": guest_ok, "valid_users": valid_users, "source": "portal"})
+    write_portal_samba_shares(shares)
+    test_samba_config()
+    return {"ok": True, "share": name}
+
+
+@app.post("/api/samba/share/delete")
+def samba_share_delete(payload: dict = Body(...)):
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Share name is required")
+    shares = [share for share in read_portal_samba_shares() if share["name"].lower() != name.lower()]
+    write_portal_samba_shares(shares)
+    test_samba_config()
+    return {"ok": True, "share": name}
+
+
+@app.get("/api/printing/status")
+def printing_status():
+    return get_printing_status()
+
+
+@app.post("/api/printing/control")
+def printing_control(payload: dict = Body(...)):
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=400, detail="Invalid action")
+    if not host_command_available("/usr/bin/systemctl"):
+        raise HTTPException(status_code=500, detail="Host systemctl not available")
+    status = get_printing_status()
+    if not status.get("cups_installed"):
+        raise HTTPException(status_code=500, detail="CUPS is not installed on the device")
+    code, stdout, stderr = run_command_full(host_binary_command("/usr/bin/systemctl", [action, "cups"]))
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr})
+    return {"ok": True, "action": action}
 
 
 @app.get("/api/service-lan/clients")
@@ -1622,7 +2149,7 @@ def service_lan_status():
     default_v4 = has_default_route(4)
     default_v6 = has_default_route(6)
     interface_v6_disabled = interface_ipv6_disabled(interface)
-    interface_conflict = same_physical_lan_interface(lan_cfg("target_interface"), interface)
+    interface_conflict = same_physical_lan_interface(get_main_lan_interface(), interface)
     ipv4_path_ready = (
         service_lan_cfg("enable_ipv4") == "true"
         and forwarding_v4
@@ -1646,6 +2173,8 @@ def service_lan_status():
         "interface": interface,
         "target_interface": interface,
         "target_interface_status": target,
+        "available_interfaces": [iface["name"] for iface in ethernet_candidates()],
+        "role_description": role_description(service_lan_cfg("role")),
         "connection_mode_ipv4": connection_mode,
         "ipv4_mode": "shared" if service_lan_cfg("enable_ipv4") == "true" else "disabled",
         "ipv4_enabled": service_lan_cfg("enable_ipv4") == "true",
@@ -1674,9 +2203,10 @@ def service_lan_status():
         "internet_enabled": internet_enabled,
         "interface_conflict": interface_conflict,
         "notes": [
-            "shared = DHCP + NAT for IPv4 clients on the isolated service port",
+            role_description(service_lan_cfg("role")),
+            "shared = DHCP + NAT for IPv4 clients on the service port",
             "routed = IPv6 forwarding and router advertisements for service clients",
-            "save config first, then toggle internet to re-apply the service LAN firewall path",
+            "plugging in a USB Ethernet adapter gives the portal another port it can auto-assign",
         ] + (["choose a different physical interface from Main LAN to keep Service LAN isolated"] if interface_conflict else []),
     }
 
@@ -1684,19 +2214,21 @@ def service_lan_status():
 @app.get("/api/main-lan/status")
 @app.get("/api/lan/profile")
 def lan_profile():
-    target_interface = lan_cfg("target_interface")
+    target_interface = get_main_lan_interface()
     target = get_interface_data(target_interface)
     target.update(get_nmcli_device_status(target_interface))
     ruleset = run_command(["nft", "list", "ruleset"])
     blocked = interface_block_active(ruleset, target_interface)
-    interface_conflict = same_physical_lan_interface(target_interface, service_lan_cfg("interface"))
+    interface_conflict = same_physical_lan_interface(target_interface, get_service_lan_interface())
     connection = get_nmcli_connection_status("main-lan")
 
     return {
         "name": "Main LAN",
-        "role": lan_cfg("role"),
+        "role": normalize_lan_role(lan_cfg("role")),
         "target_interface": target_interface,
         "target_interface_status": target,
+        "available_interfaces": [iface["name"] for iface in ethernet_candidates()],
+        "role_description": role_description(lan_cfg("role")),
         "internet_enabled": not blocked,
         "blocked_by_portal": blocked,
         "interface_conflict": interface_conflict,
@@ -1709,12 +2241,13 @@ def lan_profile():
         "ipv6_prefix": lan_cfg("ipv6_prefix"),
         "dns_servers": [item.strip() for item in lan_cfg("dns_servers").split(",") if item.strip()],
         "dns_search": lan_cfg("dns_search"),
-        "nmcli_available": command_exists("nmcli"),
+        "nmcli_available": nmcli_available(),
         "connection": connection,
         "notes": [
+            role_description(lan_cfg("role")),
             "shared = DHCP + NAT for local clients",
             "manual = static LAN without DHCP/NAT automation",
-            "eth0 needs carrier and NetworkManager management before it can be activated",
+            "plugging in a USB Ethernet adapter gives the portal another port it can auto-assign",
         ] + (["choose a different physical interface from Service LAN to keep Main LAN separate"] if interface_conflict else []),
     }
 
@@ -1732,10 +2265,11 @@ def main_lan_apply():
 
 @app.post("/api/main-lan/restart")
 def main_lan_restart():
-    if not command_exists("nmcli"):
+    nmcli_cmd = host_nmcli_command if host_nmcli_available() else (lambda args: ["nmcli"] + args)
+    if not host_nmcli_available() and not command_exists("nmcli"):
         raise HTTPException(status_code=500, detail="nmcli is not available")
-    code, stdout, stderr = run_command_full(["nmcli", "connection", "down", "main-lan"])
-    code2, stdout2, stderr2 = run_command_full(["nmcli", "connection", "up", "main-lan"])
+    code, stdout, stderr = run_command_full(nmcli_cmd(["connection", "down", "main-lan"]))
+    code2, stdout2, stderr2 = run_command_full(nmcli_cmd(["connection", "up", "main-lan"]))
     if code2 != 0:
         raise HTTPException(
             status_code=500,
@@ -1744,9 +2278,64 @@ def main_lan_restart():
     return {"ok": True, "stdout": "\n".join([stdout, stdout2]).strip(), "stderr": "\n".join([stderr, stderr2]).strip()}
 
 
+def service_lan_command_env() -> dict[str, str]:
+    return {
+        "SERVICE_LAN_INTERFACE": get_service_lan_interface(),
+        "SERVICE_LAN_IPV4_GATEWAY": service_lan_cfg("ipv4_gateway"),
+        "SERVICE_LAN_IPV4_SUBNET": service_lan_cfg("ipv4_subnet"),
+        "SERVICE_LAN_DHCP_RANGE": service_lan_cfg("dhcp_range"),
+        "SERVICE_LAN_IPV6_GATEWAY": service_lan_cfg("ipv6_gateway"),
+        "SERVICE_LAN_IPV6_PREFIX": service_lan_cfg("ipv6_prefix"),
+        "SERVICE_LAN_ENABLE_IPV4": service_lan_cfg("enable_ipv4"),
+        "SERVICE_LAN_ENABLE_IPV6": service_lan_cfg("enable_ipv6"),
+    }
+
+
+@app.post("/api/service-lan/apply")
+def service_lan_apply():
+    env = service_lan_command_env()
+    stdout_parts = []
+    stderr_parts = []
+    run_command_full(
+        ["/usr/local/bin/service-lan-inet-off.sh"],
+        env={
+            "SERVICE_LAN_INTERFACE": env["SERVICE_LAN_INTERFACE"],
+            "SERVICE_LAN_IPV6_GATEWAY": env["SERVICE_LAN_IPV6_GATEWAY"],
+            "SERVICE_LAN_IPV6_PREFIX": env["SERVICE_LAN_IPV6_PREFIX"],
+        },
+    )
+    code, stdout, stderr = run_command_full(["/usr/local/bin/service-lan-inet-on.sh"], env=env)
+    if stdout:
+        stdout_parts.append(stdout)
+    if stderr:
+        stderr_parts.append(stderr)
+    if code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": code, "stdout": "\n".join(stdout_parts).strip(), "stderr": "\n".join(stderr_parts).strip() or "Service LAN apply failed"},
+        )
+    return {"ok": True, "stdout": "\n".join(stdout_parts).strip(), "stderr": "\n".join(stderr_parts).strip()}
+
+
+@app.post("/api/service-lan/restart")
+def service_lan_restart():
+    interface = get_service_lan_interface()
+    stdout_parts = []
+    stderr_parts = []
+    for cmd in (["ip", "link", "set", "dev", interface, "down"], ["ip", "link", "set", "dev", interface, "up"]):
+        code, stdout, stderr = run_command_full(cmd)
+        if stdout:
+            stdout_parts.append(stdout)
+        if stderr:
+            stderr_parts.append(stderr)
+        if code != 0:
+            raise HTTPException(status_code=500, detail={"code": code, "stdout": "\n".join(stdout_parts).strip(), "stderr": "\n".join(stderr_parts).strip()})
+    return {"ok": True, "stdout": "\n".join(stdout_parts).strip(), "stderr": "\n".join(stderr_parts).strip()}
+
+
 @app.post("/api/main-lan/internet/on")
 def main_lan_internet_on():
-    code, stdout, stderr = set_interface_block(lan_cfg("target_interface"), False)
+    code, stdout, stderr = set_interface_block(get_main_lan_interface(), False)
     if code != 0:
         raise HTTPException(
             status_code=500,
@@ -1757,7 +2346,7 @@ def main_lan_internet_on():
 
 @app.post("/api/main-lan/internet/off")
 def main_lan_internet_off():
-    code, stdout, stderr = set_interface_block(lan_cfg("target_interface"), True)
+    code, stdout, stderr = set_interface_block(get_main_lan_interface(), True)
     if code != 0:
         raise HTTPException(
             status_code=500,
@@ -1791,7 +2380,7 @@ def interface_link_down(interface: str):
 @app.post("/api/main-lan/config")
 def update_main_lan_config(payload: dict = Body(...)):
     proposed_target = str(payload.get("target_interface", lan_cfg("target_interface"))).strip()
-    if same_physical_lan_interface(proposed_target, service_lan_cfg("interface")):
+    if proposed_target and same_physical_lan_interface(proposed_target, get_service_lan_interface()):
         raise HTTPException(status_code=400, detail="Main LAN and Service LAN cannot use the same interface")
     allowed = {
         "target_interface",
@@ -1808,7 +2397,7 @@ def update_main_lan_config(payload: dict = Body(...)):
     }
     for key, value in payload.items():
         if key in allowed and isinstance(value, str):
-            MAIN_LAN_CONFIG[key] = value.strip()
+            MAIN_LAN_CONFIG[key] = normalize_lan_role(value) if key == "role" else value.strip()
     save_runtime_config()
     return {"ok": True, "config": MAIN_LAN_CONFIG}
 
@@ -1821,7 +2410,7 @@ def active_sessions():
 @app.post("/api/service-lan/config")
 def update_service_lan_config(payload: dict = Body(...)):
     proposed_interface = str(payload.get("interface", service_lan_cfg("interface"))).strip()
-    if same_physical_lan_interface(lan_cfg("target_interface"), proposed_interface):
+    if proposed_interface and same_physical_lan_interface(get_main_lan_interface(), proposed_interface):
         raise HTTPException(status_code=400, detail="Service LAN and Main LAN cannot use the same interface")
     allowed = {
         "interface",
@@ -1840,7 +2429,7 @@ def update_service_lan_config(payload: dict = Body(...)):
     }
     for key, value in payload.items():
         if key in allowed and isinstance(value, str):
-            SERVICE_LAN_CONFIG[key] = value.strip()
+            SERVICE_LAN_CONFIG[key] = normalize_lan_role(value) if key == "role" else value.strip()
     if "ipv4_mode" in payload and isinstance(payload.get("ipv4_mode"), str):
         SERVICE_LAN_CONFIG["enable_ipv4"] = "true" if payload["ipv4_mode"].strip() != "disabled" else "false"
     if "ipv6_mode" in payload and isinstance(payload.get("ipv6_mode"), str):
@@ -1912,16 +2501,7 @@ def wifi_apply():
 
 @app.post("/api/service-lan/internet/on")
 def service_lan_internet_on():
-    env = {
-        "SERVICE_LAN_INTERFACE": get_service_lan_interface(),
-        "SERVICE_LAN_IPV4_GATEWAY": service_lan_cfg("ipv4_gateway"),
-        "SERVICE_LAN_IPV4_SUBNET": service_lan_cfg("ipv4_subnet"),
-        "SERVICE_LAN_DHCP_RANGE": service_lan_cfg("dhcp_range"),
-        "SERVICE_LAN_IPV6_GATEWAY": service_lan_cfg("ipv6_gateway"),
-        "SERVICE_LAN_IPV6_PREFIX": service_lan_cfg("ipv6_prefix"),
-        "SERVICE_LAN_ENABLE_IPV4": service_lan_cfg("enable_ipv4"),
-        "SERVICE_LAN_ENABLE_IPV6": service_lan_cfg("enable_ipv6"),
-    }
+    env = service_lan_command_env()
     code, stdout, stderr = run_command_full(["/usr/local/bin/service-lan-inet-on.sh"], env=env)
     if code != 0:
         raise HTTPException(
@@ -1947,6 +2527,34 @@ def service_lan_internet_off():
             detail={"code": code, "stdout": stdout, "stderr": stderr or "Service LAN disable failed"},
         )
     return {"ok": True, "code": code, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/system/restart")
+def system_restart():
+    if host_command_available("/usr/sbin/shutdown"):
+        cmd = ["chroot", "/host", "/usr/sbin/shutdown", "-r", "now"]
+    elif host_command_available("/usr/sbin/reboot"):
+        cmd = ["chroot", "/host", "/usr/sbin/reboot"]
+    else:
+        raise HTTPException(status_code=500, detail="Host restart command not available")
+    code, stdout, stderr = run_command_full(cmd)
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr or "Restart command failed"})
+    return {"ok": True, "stdout": stdout, "stderr": stderr}
+
+
+@app.post("/api/system/poweroff")
+def system_poweroff():
+    if host_command_available("/usr/sbin/shutdown"):
+        cmd = ["chroot", "/host", "/usr/sbin/shutdown", "-P", "now"]
+    elif host_command_available("/usr/sbin/poweroff"):
+        cmd = ["chroot", "/host", "/usr/sbin/poweroff"]
+    else:
+        raise HTTPException(status_code=500, detail="Host poweroff command not available")
+    code, stdout, stderr = run_command_full(cmd)
+    if code != 0:
+        raise HTTPException(status_code=500, detail={"code": code, "stdout": stdout, "stderr": stderr or "Power off command failed"})
+    return {"ok": True, "stdout": stdout, "stderr": stderr}
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -33,7 +33,7 @@ services:
       - /:/host:ro
       - ./backend/data:/app/data
       - /etc/hostname:/host/etc/hostname:ro
-      - /etc/samba:/host/etc/samba:ro
+      - /etc/samba:/host/etc/samba
       - /var/lib/samba:/host/var/lib/samba
       - /etc/NetworkManager/dnsmasq-shared.d:/etc/NetworkManager/dnsmasq-shared.d
       - /proc/uptime:/host/proc/uptime:ro

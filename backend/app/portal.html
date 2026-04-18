@@ -343,6 +343,10 @@
       <div class="sidebar-foot">
         <div class="refresh-state"><span id="refresh-dot" class="dot live"></span><span id="refresh-state">Auto refresh live</span></div>
         <div class="hint" id="refresh-detail">Manual refresh is always available. Auto refresh pauses while you are editing a form.</div>
+        <div class="nav-group">
+          <button class="nav-button" onclick="restartSystem()"><span><div class="nav-label">Restart</div><div class="nav-hint">Reboot the device</div></span></button>
+          <button class="nav-button" onclick="powerOffSystem()"><span><div class="nav-label">Power Off</div><div class="nav-hint">Shut down the device</div></span></button>
+        </div>
       </div>
     </aside>
 
@@ -479,12 +483,23 @@
       return true;
     }
     async function toggleServiceLanInternet(mode) { const ok = await postAction(mode === 'on' ? '/api/service-lan/internet/on' : '/api/service-lan/internet/off', 'Failed to change Service LAN internet state'); if (ok) await render(); }
+    async function restartSystem() {
+      if (!confirm('Restart the device now?')) return;
+      const ok = await postAction('/api/system/restart', 'Failed to restart the device');
+      if (ok) alert('Restart command sent.');
+    }
+    async function powerOffSystem() {
+      if (!confirm('Power off the device now?')) return;
+      const ok = await postAction('/api/system/poweroff', 'Failed to power off the device');
+      if (ok) alert('Power off command sent.');
+    }
     async function applyMainLan() { const ok = await postAction('/api/main-lan/apply', 'Failed to apply Main LAN profile'); if (ok) await render(); }
+    async function applyServiceLan() { const ok = await postAction('/api/service-lan/apply', 'Failed to apply Service LAN profile'); if (ok) await render(); }
     async function restartMainLan() { const ok = await postAction('/api/main-lan/restart', 'Failed to restart Main LAN connection'); if (ok) await render(); }
+    async function restartServiceLan() { const ok = await postAction('/api/service-lan/restart', 'Failed to restart Service LAN connection'); if (ok) await render(); }
     async function toggleMainLanInternet(mode) { const ok = await postAction(mode === 'on' ? '/api/main-lan/internet/on' : '/api/main-lan/internet/off', 'Failed to change Main LAN internet state'); if (ok) await render(); }
     async function saveMainLanConfig() {
       const payload = {
-        target_interface: document.getElementById('main-lan-target-interface').value,
         role: document.getElementById('main-lan-role').value,
         ipv4_mode: document.getElementById('main-lan-ipv4-mode').value,
         ipv4_address: document.getElementById('main-lan-ipv4-address').value,
@@ -494,7 +509,6 @@
         ipv6_address: document.getElementById('main-lan-ipv6-address').value,
         ipv6_prefix: document.getElementById('main-lan-ipv6-prefix').value,
         dns_servers: document.getElementById('main-lan-dns-servers').value,
-        dns_search: document.getElementById('main-lan-dns-search').value,
       };
       const res = await fetch('/api/main-lan/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) { alert('Failed to save Main LAN configuration'); return; }
@@ -503,7 +517,6 @@
     }
     async function saveServiceLanConfig() {
       const payload = {
-        interface: document.getElementById('service-lan-target-interface').value,
         role: document.getElementById('service-lan-role').value,
         ipv4_mode: document.getElementById('service-lan-ipv4-mode').value,
         ipv4_gateway: document.getElementById('service-lan-ipv4-gateway').value,
@@ -513,7 +526,6 @@
         ipv6_gateway: document.getElementById('service-lan-ipv6-gateway').value,
         ipv6_prefix: document.getElementById('service-lan-ipv6-prefix').value,
         dns_servers: document.getElementById('service-lan-dns-servers').value,
-        dns_search: document.getElementById('service-lan-dns-search').value,
       };
       const res = await fetch('/api/service-lan/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) { alert('Failed to save Service LAN configuration'); return; }
@@ -591,6 +603,38 @@
       alert('Samba password updated');
       await render();
     }
+    async function setSambaUserState(username, action) {
+      const res = await fetch('/api/samba/user/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, action }) });
+      if (!res.ok) { alert(`Failed to ${action} Samba user`); return; }
+      await render();
+    }
+    async function deleteSambaUser(username) {
+      const res = await fetch('/api/samba/user/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+      if (!res.ok) { alert('Failed to delete Samba user'); return; }
+      await render();
+    }
+    async function saveSambaShare() {
+      const payload = {
+        name: document.getElementById('samba-share-name').value,
+        path: document.getElementById('samba-share-path').value,
+        read_only: document.getElementById('samba-share-readonly').value,
+        guest_ok: document.getElementById('samba-share-guest').value,
+        valid_users: document.getElementById('samba-share-users').value,
+      };
+      const res = await fetch('/api/samba/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (!res.ok) { alert('Failed to save Samba share'); return; }
+      await render();
+    }
+    async function deleteSambaShare(name) {
+      const res = await fetch('/api/samba/share/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      if (!res.ok) { alert('Failed to delete Samba share'); return; }
+      await render();
+    }
+    async function controlPrinting(action) {
+      const res = await fetch('/api/printing/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+      if (!res.ok) { alert('Failed to control printing service'); return; }
+      await render();
+    }
     async function setLinkState(name, state) { const ok = await postAction(`/api/interfaces/${name}/link/${state}`, `Failed to set ${name} ${state}`); if (ok) await render(); }
     function escapeHtml(value) {
       return String(value ?? '')
@@ -663,18 +707,25 @@
       if (!tcpPort) return '';
       return `${currentProtocol}//${host}:${tcpPort.split('/')[1]}`;
     }
-    function renderOverview(overview, services, serviceLan, lanProfile) {
+    function renderOverview(overview, services, serviceLan, lanProfile, activeSessions) {
+      const hw = overview.hardware || {};
+      const fmt = (value, suffix = '') => value === null || value === undefined || value === '' ? '-' : `${value}${suffix}`;
       return `
         <div class="stat-grid">
           <div class="metric"><div class="label">Hostname</div><div class="value">${overview.hostname}</div></div>
           <div class="metric"><div class="label">Uptime</div><div class="value">${overview.uptime_seconds}s</div></div>
           <div class="metric"><div class="label">Services</div><div class="value">${services.length}</div></div>
           <div class="metric"><div class="label">LAN Internet</div><div class="value small">Service ${serviceLan.internet_enabled ? 'ON' : 'OFF'} / Main ${lanProfile.internet_enabled ? 'ON' : 'OFF'}</div></div>
+          <div class="metric"><div class="label">CPU Temp</div><div class="value small">${fmt(hw.cpu_temp_c, 'C')}</div></div>
+          <div class="metric"><div class="label">NVMe Temp</div><div class="value small">${fmt(hw.nvme_temp_c, 'C')}</div></div>
+          <div class="metric"><div class="label">Input Voltage</div><div class="value small">${fmt(hw.input_voltage_v, 'V')}</div></div>
         </div>
         <div class="route"><div class="label">IPv4 Default Route</div><div>${overview.uplink_ipv4.dev || '-'} via ${overview.uplink_ipv4.via || '-'} ${overview.uplink_ipv4.src ? `src ${overview.uplink_ipv4.src}` : ''}</div></div>
         <div class="route"><div class="label">IPv6 Default Route</div><div>${overview.uplink_ipv6.dev || '-'} via ${overview.uplink_ipv6.via || '-'} ${overview.uplink_ipv6.src ? `src ${overview.uplink_ipv6.src}` : ''}</div></div>
         <div class="route"><div class="label">Detected Uplinks</div><div>${(overview.uplinks || []).map(i => `${i.name} (${i.role}, ${i.state})`).join('<br>') || 'No active uplink detected'}</div></div>
-        <div class="route"><div class="label">Local LAN Ports</div><div>${(overview.local_lans || []).map(i => `${i.name}: ${(i.ipv4 || []).join(', ') || 'no IPv4'} | ${(i.ipv6 || []).join(', ') || 'no IPv6'} | ${i.state}`).join('<br>') || '-'}</div></div>`;
+        <div class="route"><div class="label">Local LAN Ports</div><div>${(overview.local_lans || []).map(i => `${i.name}: ${(i.ipv4 || []).join(', ') || 'no IPv4'} | ${(i.ipv6 || []).join(', ') || 'no IPv6'} | ${i.state}`).join('<br>') || '-'}</div></div>
+        <div class="route"><div class="label">Hardware</div><div>CPU ${fmt(hw.cpu_temp_c, 'C')}<br>NVMe ${fmt(hw.nvme_temp_c, 'C')}<br>Input ${fmt(hw.input_voltage_v, 'V')}</div></div>
+        <div class="route"><div class="label">Active Sessions</div><div>${(activeSessions || []).length ? activeSessions.slice(0, 6).map(s => `${s.entry || s.service}: ${s.peer_address} -> ${s.local_address}:${s.local_port} (${s.interface || '-'})`).join('<br>') : 'No active sessions detected'}</div></div>`;
     }
     function renderLte(lte) {
       if (!lte.available) return '<div class="muted">LTE modem not available</div>';
@@ -694,24 +745,21 @@
     }
     function renderLanCard(profile, prefix, ethernetInterfaces) {
       const isService = prefix === 'service-lan';
-      const roleOptions = ['multi-purpose', 'home-lab', 'service', 'isolated'];
+      const roleOptions = ['isolated', 'internal', 'external'];
       const ipv4ModeOptions = isService ? ['shared', 'disabled'] : ['shared', 'manual', 'disabled'];
       const ipv6ModeOptions = isService ? ['routed', 'disabled'] : ['routed', 'manual', 'disabled'];
-      const interfaceId = `${prefix}-target-interface`;
       const roleId = `${prefix}-role`;
       const ipv4ModeId = `${prefix}-ipv4-mode`;
       const ipv4AddressId = isService ? `${prefix}-ipv4-gateway` : `${prefix}-ipv4-address`;
       const ipv6ModeId = `${prefix}-ipv6-mode`;
       const ipv6AddressId = isService ? `${prefix}-ipv6-gateway` : `${prefix}-ipv6-address`;
       const dnsServersId = `${prefix}-dns-servers`;
-      const dnsSearchId = `${prefix}-dns-search`;
       const status = profile.target_interface_status || {};
       const configPrefix = prefix.replace('-', '_');
       const dnsServers = draftValue(`${prefix.replace('-', '_')}.dns_servers`, (profile.dns_servers || []).join(', '));
-      const dnsSearch = draftValue(`${prefix.replace('-', '_')}.dns_search`, profile.dns_search || '');
       const internetButtons = isService
-        ? `<button onclick="toggleServiceLanInternet('on')">Enable Internet</button><button class="secondary" onclick="toggleServiceLanInternet('off')">Disable Internet</button>`
-        : `<button onclick="applyMainLan()">Apply Main LAN</button><button class="secondary" onclick="restartMainLan()">Restart Connection</button><button onclick="toggleMainLanInternet('on')">Enable Internet</button><button class="secondary" onclick="toggleMainLanInternet('off')">Disable Internet</button>`;
+        ? `<button onclick="applyServiceLan()">Apply Config</button><button class="secondary" onclick="restartServiceLan()">Restart Connection</button><button onclick="toggleServiceLanInternet('on')">Enable Internet</button><button class="secondary" onclick="toggleServiceLanInternet('off')">Disable Internet</button>`
+        : `<button onclick="applyMainLan()">Apply Config</button><button class="secondary" onclick="restartMainLan()">Restart Connection</button><button onclick="toggleMainLanInternet('on')">Enable Internet</button><button class="secondary" onclick="toggleMainLanInternet('off')">Disable Internet</button>`;
       return `
         <div class="stat-grid">
           <div class="metric"><div class="label">Profile</div><div class="value small">${profile.name || '-'}</div></div>
@@ -725,8 +773,9 @@
           <div class="metric"><div class="label">Conflict</div><div class="value small">${profile.interface_conflict ? 'Same as other LAN' : 'None'}</div></div>
         </div>
         ${renderLanSection('Basic', `<div class="stat-grid" style="margin-top:10px;">
-          <div class="metric"><div class="label">Target Interface</div><select id="${interfaceId}">${ethernetInterfaces.map(i => `<option value="${i.name}" ${draftValue(`${configPrefix}.${isService ? 'interface' : 'target_interface'}`, profile.target_interface || profile.interface) === i.name ? 'selected' : ''}>${i.name}</option>`).join('')}</select></div>
-          <div class="metric"><div class="label">Role</div><select id="${roleId}">${roleOptions.map(v => `<option value="${v}" ${draftValue(`${configPrefix}.role`, profile.role || 'multi-purpose') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          <div class="metric"><div class="label">Assigned Port</div><div class="value small">${profile.target_interface || profile.interface || '-'}</div></div>
+          <div class="metric"><div class="label">Available Ports</div><div class="value small">${(profile.available_interfaces || []).join(', ') || '-'}</div></div>
+          <div class="metric"><div class="label">Role</div><select id="${roleId}">${roleOptions.map(v => `<option value="${v}" ${draftValue(`${configPrefix}.role`, profile.role || 'internal') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
           <div class="metric"><div class="label">Current IPv4</div><div class="value small">${(status.ipv4 || []).join(', ') || '-'}</div></div>
           <div class="metric"><div class="label">Current IPv6</div><div class="value small">${(status.ipv6 || []).join(', ') || '-'}</div></div>
         </div>`)}
@@ -741,7 +790,7 @@
         </div>`)}
         ${renderLanSection('DNS', `<div class="stat-grid" style="margin-top:10px;">
           <div class="metric"><div class="label">DNS Servers</div><input id="${dnsServersId}" value="${dnsServers}" /></div>
-          <div class="metric"><div class="label">DNS Search</div><input id="${dnsSearchId}" value="${dnsSearch}" /></div>
+          <div class="metric"><div class="label">DNS Mode</div><div class="value small">${profile.role_description || '-'}</div></div>
           ${isService ? `<div class="metric"><div class="label">DHCP Listener</div><div class="value small">${profile.dhcp_listener_active ? 'UP' : 'DOWN'}</div></div><div class="metric"><div class="label">IPv6 RA</div><div class="value small">${profile.router_advertisements_active ? 'UP' : 'DOWN'}</div></div>` : `<div class="metric"><div class="label">Blocked By Portal</div><div class="value small">${profile.blocked_by_portal ? 'YES' : 'NO'}</div></div><div class="metric"><div class="label">Profile Name</div><div class="value small">${profile.name || '-'}</div></div>`}
         </div>`)}
         ${renderLanSection('Internet', `<div class="stat-grid" style="margin-top:10px;">
@@ -762,6 +811,7 @@
       const pihole = await loadJSON('/api/pihole/status');
       const netalert = await loadJSON('/api/netalert/status');
       const samba = await loadJSON('/api/samba/status');
+      const printing = await loadJSON('/api/printing/status');
       const interfaces = await loadJSON('/api/interfaces');
       const serviceLan = await loadJSON('/api/service-lan/status');
       const serviceLanClients = await loadJSON('/api/service-lan/clients');
@@ -775,7 +825,7 @@
       updateRefreshState();
       window.lteApnOptions = lteOptions.options || [];
 
-      document.getElementById('overview').innerHTML = renderOverview(overview, services, serviceLan, lanProfile);
+      document.getElementById('overview').innerHTML = renderOverview(overview, services, serviceLan, lanProfile, activeSessions);
       document.getElementById('lte').innerHTML = renderLte(lte);
 
       document.getElementById('lte-apn').innerHTML = `
@@ -799,24 +849,27 @@
         <div class="controls">${lteSuggest.suggested.id ? `<button class="secondary" onclick="applySuggestedApn('${lteSuggest.suggested.id}')">Apply Suggested</button>` : ''}<button onclick="applyLteApn()">Apply APN</button></div>
         ${lteSuggest.override && lteSuggest.override.apn ? `<div class="hint">Saved override for SIM: ${lteSuggest.override.apn} (${lteSuggest.override.ipv4_method}/${lteSuggest.override.ipv6_method})</div>` : ''}`;
 
-      const serviceCards = [];
-      serviceCards.push(serviceCardMarkup(
+      const namedServiceCards = [];
+      const genericServiceCards = [];
+      namedServiceCards.push(serviceCardMarkup(
         'svc-pihole',
         'Pi-hole',
         pihole.active ? 'Active' : 'Not reachable',
-        `${pihole.admin_reachable ? 'Admin reachable' : 'Admin offline'} | DNS ${(pihole.dns_binds || []).join(', ') || '-'}`,
+        `${pihole.admin_reachable ? 'Admin reachable' : 'Admin offline'} | DNS ${(pihole.dns_binds || []).join(', ') || '-'} | Forwarding ${pihole.dns_forwarding_enabled ? 'enabled' : 'disabled'} | ${(pihole.active_networks || []).join(', ') || 'No active LAN binding'}`,
         {
           'Admin UI': `${pihole.admin_reachable ? 'reachable' : 'not reachable'} (${pihole.admin_status_code || '-'})`,
           'Root URL': `${pihole.root_reachable ? 'reachable' : 'not reachable'} (${pihole.root_status_code || '-'})`,
           'DNS listener': pihole.dns_listener_detected ? 'detected' : 'not detected',
           'DNS binds': (pihole.dns_binds || []).join(', ') || '-',
+          'Forwarding': pihole.dns_forwarding_enabled ? `enabled via ${pihole.container_ip || 'Pi-hole container'}` : 'disabled',
+          'Active networks': (pihole.active_networks || []).join(', ') || '-',
           'Portal mode': 'read-only health check',
         },
         `http://${window.location.hostname}:8081/admin/`,
         'DNS filtering and local resolver',
         (pihole.notes || []).join(' ')
       ));
-      serviceCards.push(serviceCardMarkup(
+      namedServiceCards.push(serviceCardMarkup(
         'svc-netalert',
         'NetAlertX',
         netalert.detected ? 'Detected' : 'Not detected',
@@ -836,7 +889,7 @@
           .filter(service => !['Pi-hole', 'NetAlertX'].includes(service.name))
           .forEach(service => {
           const url = getServiceUrl(service);
-          serviceCards.push(serviceCardMarkup(
+          const markup = serviceCardMarkup(
             `svc-${service.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
             service.name,
             service.active ? 'Active' : 'Detected',
@@ -850,10 +903,20 @@
             url,
             'Listener details',
             'Tap the service card to inspect ports, binds and quick-open actions.'
-          ));
+          );
+          if ((service.name || '').startsWith('Port ')) genericServiceCards.push(markup);
+          else namedServiceCards.push(markup);
         });
       }
-      document.getElementById('services').innerHTML = `<div class="service-list">${serviceCards.join('')}</div>`;
+      document.getElementById('services').innerHTML = `
+        <div class="route">
+          <div class="label">Named Services</div>
+          <div class="service-list">${namedServiceCards.join('') || '<div class="muted">No named services detected</div>'}</div>
+        </div>
+        <div class="route">
+          <div class="label">Unnamed Ports</div>
+          <div class="service-list">${genericServiceCards.join('') || '<div class="muted">No generic port-only listeners detected</div>'}</div>
+        </div>`;
 
       document.getElementById('samba-panel').innerHTML = `
         <div class="stat-grid">
@@ -861,12 +924,18 @@
           <div class="metric"><div class="label">NMBD</div><div class="value small">${samba.nmbd_running ? 'Running' : 'Stopped'}</div></div>
           <div class="metric"><div class="label">Config</div><div class="value small">${samba.config_path || 'not found'}</div></div>
           <div class="metric"><div class="label">Shares</div><div class="value">${(samba.shares || []).length}</div></div>
+          <div class="metric"><div class="label">Portal Shares</div><div class="value">${(samba.portal_shares || []).length}</div></div>
+          <div class="metric"><div class="label">Users</div><div class="value">${(samba.users || []).length}</div></div>
+          <div class="metric"><div class="label">Config Writable</div><div class="value small">${samba.host_config_writable ? 'YES' : 'NO'}</div></div>
         </div>
         <div class="controls"><button onclick="controlSamba('start')">Start</button><button onclick="controlSamba('restart')">Restart</button><button class="secondary" onclick="controlSamba('stop')">Stop</button></div>
         <div class="share-list" style="margin-top:12px;">
-          ${(samba.shares || []).length ? samba.shares.map(share => `<div class="item"><div class="item-top"><div class="item-title">${share.name}</div><div class="badge">${share.read_only || 'read-write'}</div></div><div class="muted">Path: ${share.path || '-'}</div><div class="muted">Guest: ${share.guest_ok || '-'} | Users: ${share.valid_users || 'any configured user'}</div></div>`).join('') : '<div class="item"><div class="muted">No shares found in the active Samba config.</div></div>'}
+          ${(samba.shares || []).length ? samba.shares.map(share => `<div class="item"><div class="item-top"><div class="item-title">${share.name}</div><div class="badge">${share.read_only || 'read-write'}</div></div><div class="muted">Path: ${share.path || '-'}</div><div class="muted">Guest: ${share.guest_ok || '-'} | Users: ${share.valid_users || 'any configured user'} | Source: ${share.source || 'main'}</div>${share.source === 'portal' ? `<div class="controls"><button class="secondary" onclick="deleteSambaShare('${share.name}')">Delete Share</button></div>` : ''}</div>`).join('') : '<div class="item"><div class="muted">No shares found in the active Samba config.</div></div>'}
         </div>
-        <div class="route"><div class="label">Password Management</div><div class="stat-grid"><div class="metric"><div class="label">Username</div><input id="samba-username" placeholder="evil" /></div><div class="metric"><div class="label">Password</div><input id="samba-password" type="password" /></div></div><div class="controls"><button onclick="setSambaPassword()">Set Samba Password</button></div><div class="hint">${samba.smbpasswd_available ? 'Password updates use smbpasswd against the mounted host Samba database.' : 'smbpasswd is not available inside the backend image.'}</div></div>`;
+        <div class="route"><div class="label">Users</div><div class="share-list">${(samba.users || []).length ? samba.users.map(user => `<div class="item"><div class="item-top"><div class="item-title">${user.username}</div><div class="badge">SMB</div></div><div class="muted">${user.description || 'Samba account present'}</div><div class="controls"><button class="secondary" onclick="setSambaUserState('${user.username}', 'disable')">Disable</button><button class="secondary" onclick="setSambaUserState('${user.username}', 'enable')">Enable</button><button class="secondary" onclick="deleteSambaUser('${user.username}')">Delete User</button></div></div>`).join('') : '<div class="item"><div class="muted">No Samba users detected in passdb.</div></div>'}</div></div>
+        <div class="route"><div class="label">Share Management</div><div class="stat-grid"><div class="metric"><div class="label">Share Name</div><input id="samba-share-name" placeholder="media" /></div><div class="metric"><div class="label">Path</div><input id="samba-share-path" placeholder="/srv/storage/media" /></div><div class="metric"><div class="label">Read Only</div><select id="samba-share-readonly"><option value="No">No</option><option value="Yes">Yes</option></select></div><div class="metric"><div class="label">Guest OK</div><select id="samba-share-guest"><option value="No">No</option><option value="Yes">Yes</option></select></div><div class="metric"><div class="label">Valid Users</div><input id="samba-share-users" placeholder="evil alice" /></div></div><div class="controls"><button onclick="saveSambaShare()">Save Share</button></div><div class="hint">Portal-managed shares are written into a dedicated include file so the main Samba config stays readable.</div></div>
+        <div class="route"><div class="label">User Management</div><div class="stat-grid"><div class="metric"><div class="label">Username</div><input id="samba-username" placeholder="evil" /></div><div class="metric"><div class="label">Password</div><input id="samba-password" type="password" /></div></div><div class="controls"><button onclick="setSambaPassword()">Add / Update Samba User</button></div><div class="hint">${samba.smbpasswd_available ? 'User management now targets the host Samba database.' : 'smbpasswd is not available inside the backend image.'}</div></div>
+        <div class="route"><div class="label">Printing</div><div class="stat-grid"><div class="metric"><div class="label">CUPS</div><div class="value small">${printing.cups_installed ? (printing.cups_active ? 'Running' : 'Stopped') : 'Not installed'}</div></div><div class="metric"><div class="label">Enabled</div><div class="value small">${printing.cups_installed ? (printing.cups_enabled ? 'YES' : 'NO') : '-'}</div></div><div class="metric"><div class="label">Listener</div><div class="value small">${printing.cups_listener ? 'Port 631' : '-'}</div></div><div class="metric"><div class="label">Printer Shares</div><div class="value small">${(printing.printer_shares || []).map(s => s.name).join(', ') || '-'}</div></div></div><div class="controls"><button onclick="controlPrinting('start')">Start</button><button onclick="controlPrinting('restart')">Restart</button><button class="secondary" onclick="controlPrinting('stop')">Stop</button></div><div class="hint">${printing.cups_installed ? 'CUPS controls affect the device print service.' : 'CUPS is not installed right now. Samba printer shares exist, but there is no local print daemon to manage.'}</div></div>`;
 
       const ethernetInterfaces = interfaces.filter(i => i.physical && i.role === 'ethernet');
       document.getElementById('service-lan').innerHTML = renderLanCard(serviceLan, 'service-lan', ethernetInterfaces);
@@ -915,10 +984,9 @@
 
       document.getElementById('service-lan-clients').innerHTML = serviceLanClients.length ? `<div class="client-list">${serviceLanClients.map(c => `<div class="item"><div class="item-top"><div class="item-title">${c.hostname || c.mac || 'Client'}</div><div class="badge">${c.interface || '-'}</div></div><div class="muted">IP: ${c.ip}</div><div class="muted">MAC: ${c.mac || '-'}</div><div class="muted">Family: ${c.family || '-'} | State: ${c.state || '-'}</div></div>`).join('')}</div>` : '<div class="muted">No clients detected</div>';
 
-      document.getElementById('active-sessions').innerHTML = activeSessions.length ? `<div class="session-list">${activeSessions.map(s => `<div class="item"><div class="item-top"><div class="item-title">${s.service}</div><div class="badge">${s.interface || '-'}</div></div><div class="muted">Local: ${s.local_address}:${s.local_port}</div><div class="muted">Peer: ${s.peer_address}:${s.peer_port}</div><div class="muted">Family: ${s.family}</div></div>`).join('')}</div>` : '<div class="muted">No active sessions detected</div>';
+      document.getElementById('active-sessions').innerHTML = activeSessions.length ? `<div class="session-list">${activeSessions.map(s => `<div class="item"><div class="item-top"><div class="item-title">${s.entry || s.service}</div><div class="badge">${s.interface || '-'}</div></div><div class="muted">Peer: ${s.peer_address}:${s.peer_port} -> ${s.local_address}:${s.local_port}</div><div class="muted">Family: ${s.family}${s.process ? ` | Process: ${s.process}` : ''}</div></div>`).join('')}</div>` : '<div class="muted">No active sessions detected</div>';
 
       [
-        ['main-lan-target-interface', 'main_lan.target_interface'],
         ['main-lan-role', 'main_lan.role'],
         ['main-lan-ipv4-mode', 'main_lan.ipv4_mode'],
         ['main-lan-ipv4-address', 'main_lan.ipv4_address'],
@@ -928,8 +996,6 @@
         ['main-lan-ipv6-address', 'main_lan.ipv6_address'],
         ['main-lan-ipv6-prefix', 'main_lan.ipv6_prefix'],
         ['main-lan-dns-servers', 'main_lan.dns_servers'],
-        ['main-lan-dns-search', 'main_lan.dns_search'],
-        ['service-lan-target-interface', 'service_lan.interface'],
         ['service-lan-role', 'service_lan.role'],
         ['service-lan-ipv4-mode', 'service_lan.ipv4_mode'],
         ['service-lan-ipv4-gateway', 'service_lan.ipv4_gateway'],
@@ -939,7 +1005,6 @@
         ['service-lan-ipv6-gateway', 'service_lan.ipv6_gateway'],
         ['service-lan-ipv6-prefix', 'service_lan.ipv6_prefix'],
         ['service-lan-dns-servers', 'service_lan.dns_servers'],
-        ['service-lan-dns-search', 'service_lan.dns_search'],
         ['wifi-interface', 'wifi.interface'],
         ['wifi-mode', 'wifi.mode'],
         ['wifi-ssid', 'wifi.ssid'],

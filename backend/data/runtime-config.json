@@ -2,7 +2,7 @@
   "main_lan": {
     "name": "Main LAN",
     "target_interface": "eth0",
-    "role": "multi-purpose",
+    "role": "internal",
     "ipv4_mode": "shared",
     "ipv4_address": "10.0.0.1/24",
     "ipv4_subnet": "10.0.0.0/24",
@@ -10,7 +10,7 @@
     "ipv6_mode": "routed",
     "ipv6_address": "fd42:100::1/64",
     "ipv6_prefix": "fd42:100::/64",
-    "dns_servers": "1.1.1.1,8.8.8.8",
+    "dns_servers": "10.0.0.1",
     "dns_search": "home.lab"
   },
   "service_lan": {
@@ -24,7 +24,7 @@
     "ipv6_prefix": "fd42:10::/64",
     "enable_ipv4": "true",
     "enable_ipv6": "true",
-    "dns_servers": "1.1.1.1,8.8.8.8",
+    "dns_servers": "192.168.10.1",
     "dns_search": "home.lab"
   },
   "wifi": {
