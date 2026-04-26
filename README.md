@@ -395,6 +395,14 @@ Cellular/LTE support is designed for field deployment, fallback connectivity, or
 
 The redesigned interface uses a dark operational dashboard style with grouped navigation, live status cards, action previews, and role-based network pages. It is built to make the R1000 easier to operate as both a field-service gateway and a home lab infrastructure node.
 
+### Login
+
+The login page keeps panel access behind a local session-cookie flow before exposing device controls.
+
+It is intentionally simple so screenshots and field use both start from a clear, secure entry point.
+
+![Login](assets/images/login-page.png)
+
 ### Dashboard
 
 The dashboard provides the main operational overview of the device. It summarizes uplinks, LAN state, wireless state, running containers, live sessions, local ports, detected clients, and key system health metrics.
