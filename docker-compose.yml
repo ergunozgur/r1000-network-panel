@@ -36,6 +36,8 @@ services:
       - /etc/samba:/host/etc/samba
       - /var/lib/samba:/host/var/lib/samba
       - /etc/NetworkManager/dnsmasq-shared.d:/etc/NetworkManager/dnsmasq-shared.d
+      - /sys/class/leds:/host-sys/class/leds
+      - /sys/devices/platform/leds:/host-sys/devices/platform/leds
       - /proc/uptime:/host/proc/uptime:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       - /var/lib/misc:/host/var/lib/misc:ro

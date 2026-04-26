@@ -479,6 +479,7 @@
         <button class="nav-button" data-view="services" onclick="setView('services')"><span><div class="nav-label">Services</div><div class="nav-hint">Local listeners and service entry points</div></span></button>
         <button class="nav-button" data-view="filesharing" onclick="setView('filesharing')"><span><div class="nav-label">File Sharing</div><div class="nav-hint">Samba, printing and future NFS</div></span></button>
         <button class="nav-button" data-view="filesystem" onclick="setView('filesystem')"><span><div class="nav-label">File System</div><div class="nav-hint">Mounts, disks and external storage</div></span></button>
+        <button class="nav-button" data-view="deviceio" onclick="setView('deviceio')"><span><div class="nav-label">Device I/O</div><div class="nav-hint">LEDs, serial ports and GPIO chips</div></span></button>
         <button class="nav-button" data-view="lorawan" onclick="setView('lorawan')"><span><div class="nav-label">LoRaWAN</div><div class="nav-hint">Reserved for future radio modules</div></span></button>
       </div>
       <div class="sidebar-spacer"></div>
@@ -578,6 +579,12 @@
         </div>
       </section>
 
+      <section id="page-deviceio" class="page">
+        <div class="grid">
+          <div class="card span-2"><div class="card-header"><div><h3>Device I/O</h3><p>Kernel-visible LEDs, serial ports and GPIO controllers.</p></div></div><div id="deviceio-panel">Loading...</div></div>
+        </div>
+      </section>
+
       <section id="page-lorawan" class="page">
         <div class="grid">
           <div class="card span-2"><div class="card-header"><div><h3>LoRaWAN / Meshtastic</h3><p>Reserved space for future radio module settings and profiles.</p></div></div><div id="lorawan-panel"></div></div>
@@ -647,6 +654,7 @@
       services: { title: 'Services', subtitle: 'Compact service discovery with docker/system source tags.' },
       filesharing: { title: 'File Sharing', subtitle: 'Samba, users, shares and future NFS style expansion.' },
       filesystem: { title: 'File System', subtitle: 'Storage topology, mounts and removable device visibility.' },
+      deviceio: { title: 'Device I/O', subtitle: 'LEDs, serial ports, GPIO chips and expansion readiness.' },
       lorawan: { title: 'LoRaWAN', subtitle: 'Placeholder for future LoRa, Meshtastic and radio workflows.' },
     };
     const REACTIVE_DRAFT_KEYS = new Set([
@@ -1052,6 +1060,10 @@
         setTogglePending(pendingKey, false);
         await render();
       }
+    }
+    async function setLedState(name, payload) {
+      const ok = await postAction('/api/device-io/led', 'Failed to update LED', { name, ...payload });
+      if (ok) await render();
     }
     async function controlSamba(action) {
       const ok = await fetchJSON('/api/samba/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
@@ -1679,11 +1691,38 @@
         <div class="route"><div class="label">Other Mounts</div><div class="item-list" style="margin-top:10px;">${otherMounts.length ? otherMounts.map(m => `<div class="item"><div class="item-top"><div class="item-title">${escapeHtml(m.mountpoint)}</div><div class="badge">${escapeHtml(m.use_percent)}</div></div><div class="muted">${escapeHtml(m.filesystem)} | Size ${escapeHtml(m.size)} | Used ${escapeHtml(m.used)} | Free ${escapeHtml(m.available)}</div></div>`).join('') : '<div class="muted">No additional mounts worth showing right now</div>'}</div></div>
       `;
     }
+    function renderDeviceIo(deviceIo) {
+      const leds = deviceIo.leds || [];
+      const serialPorts = deviceIo.serial_ports || [];
+      const gpioChips = deviceIo.gpio_chips || [];
+      const ledMarkup = leds.map(led => {
+        const triggerOptions = (led.triggers || []).slice(0, 40).map(trigger => `<option value="${escapeHtml(trigger)}" ${led.trigger === trigger ? 'selected' : ''}>${escapeHtml(trigger)}</option>`).join('');
+        const role = led.role ? led.role.toUpperCase() : 'LED';
+        const polarity = led.active_low ? 'Active-low' : 'Active-high';
+        return `<div class="item"><div class="item-top"><div class="item-title">${escapeHtml(led.name)}</div><div class="badge">${escapeHtml(role)}</div></div><div class="muted">Trigger: ${escapeHtml(led.trigger || '-')} | Brightness: ${escapeHtml(led.brightness)} / ${escapeHtml(led.max_brightness)} | ${escapeHtml(polarity)} | Source: ${escapeHtml(led.source || '-')}</div><div class="controls"><button class="secondary" onclick="setLedState('${escapeHtml(led.name)}',{trigger:'none',state:'off'})" ${led.can_set_brightness ? '' : 'disabled'}>Off</button><button class="secondary" onclick="setLedState('${escapeHtml(led.name)}',{trigger:'none',state:'on'})" ${led.can_set_brightness ? '' : 'disabled'}>On</button>${triggerOptions ? `<select onchange="setLedState('${escapeHtml(led.name)}',{trigger:this.value})" ${led.can_set_trigger ? '' : 'disabled'}>${triggerOptions}</select>` : ''}</div></div>`;
+      }).join('');
+      const serialMarkup = serialPorts.map(port => `<div class="item"><div class="item-top"><div class="item-title">${escapeHtml(port.path)}</div><div class="badge">${escapeHtml(port.kind || 'serial')}</div></div><div class="muted">Read: ${escapeHtml(port.readable)} | Write: ${escapeHtml(port.writable)} | Source: ${escapeHtml(port.source || '-')}</div>${port.link ? `<div class="muted">Stable link: ${escapeHtml(port.link)}</div>` : ''}</div>`).join('');
+      const gpioMarkup = gpioChips.map(chip => `<div class="item"><div class="item-top"><div class="item-title">${escapeHtml(chip.name)}</div><div class="badge">${escapeHtml(chip.ngpio || '-')} GPIO</div></div><div class="muted">Label: ${escapeHtml(chip.label || '-')} | Base: ${escapeHtml(chip.base || '-')}</div><div class="muted">Source: ${escapeHtml(chip.source || '-')}</div></div>`).join('');
+      return `
+        <div class="stat-grid">
+          <div class="metric"><div class="label">LEDs</div><div class="value">${leds.length}</div></div>
+          <div class="metric"><div class="label">Serial Ports</div><div class="value">${serialPorts.length}</div></div>
+          <div class="metric"><div class="label">GPIO Chips</div><div class="value">${gpioChips.length}</div></div>
+          <div class="metric"><div class="label">USER Policy</div><div class="value small">${escapeHtml((deviceIo.led_policy || {}).last_user_state || 'waiting')}</div></div>
+          <div class="metric"><div class="label">Expected RS485</div><div class="value small">${escapeHtml((deviceIo.expected_rs485 || []).join(', ') || '-')}</div></div>
+        </div>
+        <div class="hint">${deviceIo.manual_override_active ? 'Manual RGB override is active for the portal controls.' : 'Automatic RGB policy is active.'}</div>
+        <div class="route"><div class="label">LEDs</div><div class="item-list" style="margin-top:10px;">${ledMarkup || '<div class="muted">No LEDs exposed by sysfs</div>'}</div></div>
+        <div class="route"><div class="label">Serial Ports</div><div class="item-list" style="margin-top:10px;">${serialMarkup || '<div class="muted">No serial ports detected</div>'}</div></div>
+        <div class="route"><div class="label">GPIO Controllers</div><div class="item-list" style="margin-top:10px;">${gpioMarkup || '<div class="muted">No GPIO chips detected</div>'}</div></div>
+        <div class="hint">${(deviceIo.notes || []).map(escapeHtml).join(' ') || 'Device I/O inventory is available.'}</div>
+      `;
+    }
     async function render() {
       const [
         overview, systemStats, lte, lteProfile, lteOptions, lteSuggest, lteAuto, atExamples,
         services, pihole, piholeNetworks, netalert, samba, printing, interfaces,
-        serviceLan, serviceLanClients, wifiClients, lanProfile, activeSessions, wifi, filesystem
+        serviceLan, serviceLanClients, wifiClients, lanProfile, activeSessions, wifi, filesystem, deviceIo
       ] = await Promise.all([
         loadJSON('/api/overview'),
         loadJSON('/api/system/stats'),
@@ -1707,6 +1746,7 @@
         loadJSON('/api/active-sessions'),
         loadJSON('/api/wifi/status'),
         loadJSON('/api/filesystem'),
+        loadJSON('/api/device-io'),
       ]);
 
       appState.lastSyncAt = Date.now();
@@ -1749,6 +1789,7 @@
       document.getElementById('samba-panel').innerHTML = renderSamba(samba);
       document.getElementById('printing-panel').innerHTML = renderPrinting(printing);
       document.getElementById('filesystem-panel').innerHTML = renderFileSystem(filesystem);
+      document.getElementById('deviceio-panel').innerHTML = renderDeviceIo(deviceIo);
       document.getElementById('lorawan-panel').innerHTML = `<div class="stat-grid"><div class="metric"><div class="label">Module State</div><div class="value small">Not installed yet</div></div><div class="metric"><div class="label">Planned Uses</div><div class="value small">LoRaWAN, Meshtastic, profiles and radio settings</div></div></div><div class="hint">This page is ready as a placeholder so future radio modules can live in a dedicated area instead of being scattered across the dashboard.</div>`;
 
       [
